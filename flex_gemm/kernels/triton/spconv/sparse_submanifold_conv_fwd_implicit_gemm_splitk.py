@@ -10,7 +10,7 @@ from .sparse_submanifold_conv_fwd_implicit_gemm import sparse_submanifold_conv_f
 
 @triton_autotune(
     configs=config.autotune_config,
-    key=['LOGN', 'Ci', 'Co', 'V', 'SPLITK'],
+    key=['LOGN', 'Ci', 'Co', 'V', 'SPLITK', 'allow_tf32'],
 )
 @triton.jit
 def sparse_submanifold_conv_fwd_implicit_gemm_splitk_kernel(
@@ -26,6 +26,7 @@ def sparse_submanifold_conv_fwd_implicit_gemm_splitk_kernel(
     B2: tl.constexpr,   # Block size for Co dimension
     BK: tl.constexpr,   # Block size for K dimension (V * Ci)
     SPLITK: tl.constexpr,  # Split K dimension
+    allow_tf32: tl.constexpr,  # Allow TF32 precision for matmuls
 ):
     """
     Sparse submanifold convolution forward kernel using implicit GEMM with split K dimension.
@@ -71,7 +72,7 @@ def sparse_submanifold_conv_fwd_implicit_gemm_splitk_kernel(
         weight_block = tl.load(weight_ptr, mask=k_mask[:, None], other=0.0)
         # Accumulate along the K dimension.
         accumulator = tl.dot(input_block, weight_block, accumulator,
-                             input_precision='tf32' if config.allow_tf32 else 'ieee')           # (B1, B2)
+                             input_precision='tf32' if allow_tf32 else 'ieee')                  # (B1, B2)
         # Advance the pointers to the next Ci block.
         weight_ptr += min(BK, Ci - bk * BK)
             
@@ -131,7 +132,8 @@ def sparse_submanifold_conv_fwd_implicit_gemm_splitk(
         grid = lambda META: (triton.cdiv(Co, META['B2']) * triton.cdiv(N, META['B1']),)
         sparse_submanifold_conv_fwd_implicit_gemm_kernel[grid](
             input, weight, bias, neighbor, output,
-            N, LOGN, Ci, Co, V,  #
+            N, LOGN, Ci, Co, V,
+            allow_tf32=config.allow_tf32,
         )
         return output
     else:
@@ -139,7 +141,8 @@ def sparse_submanifold_conv_fwd_implicit_gemm_splitk(
         grid = lambda META: (triton.cdiv(Co, META['B2']) * triton.cdiv(N, META['B1']), SPLITK)
         sparse_submanifold_conv_fwd_implicit_gemm_splitk_kernel[grid](
             input, weight, bias, neighbor, output,
-            N, LOGN, Ci, Co, V,  #
-            SPLITK=SPLITK
+            N, LOGN, Ci, Co, V,
+            SPLITK=SPLITK,
+            allow_tf32=config.allow_tf32,
         )
         return output.sum(dim=0).to(input.dtype)

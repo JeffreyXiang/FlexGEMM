@@ -9,7 +9,7 @@ from . import config
 
 @triton_autotune(
     configs=config.autotune_config,
-    key=['LOGN', 'Ci', 'Co', 'V'],
+    key=['LOGN', 'Ci', 'Co', 'V', 'allow_tf32'],
 )
 @triton.jit
 def sparse_submanifold_conv_fwd_implicit_gemm_kernel(
@@ -24,6 +24,7 @@ def sparse_submanifold_conv_fwd_implicit_gemm_kernel(
     B1: tl.constexpr,   # Block size for N dimension
     B2: tl.constexpr,   # Block size for Co dimension
     BK: tl.constexpr,   # Block size for K dimension (V * Ci)
+    allow_tf32: tl.constexpr,  # Allow TF32 precision for matmuls
 ):
     """
     Sparse submanifold convolution forward kernel using implicit GEMM.
@@ -66,7 +67,7 @@ def sparse_submanifold_conv_fwd_implicit_gemm_kernel(
         weight_block = tl.load(weight_ptr, mask=k_mask[:, None], other=0.0)
         # Accumulate along the K dimension.
         accumulator = tl.dot(input_block, weight_block, accumulator,
-                             input_precision='tf32' if config.allow_tf32 else 'ieee')           # (B1, B2)
+                             input_precision='tf32' if allow_tf32 else 'ieee')                  # (B1, B2)
         # Advance the pointers to the next Ci block.
         weight_ptr += min(BK, Ci - bk * BK)
     c = accumulator.to(input.type.element_ty)
@@ -102,6 +103,7 @@ def sparse_submanifold_conv_fwd_implicit_gemm(
     grid = lambda META: (triton.cdiv(Co, META['B2']) * triton.cdiv(N, META['B1']),)
     sparse_submanifold_conv_fwd_implicit_gemm_kernel[grid](
         input, weight, bias, neighbor, output,
-        N, LOGN, Ci, Co, V,  #
+        N, LOGN, Ci, Co, V,
+        allow_tf32=config.allow_tf32,
     )
     return output

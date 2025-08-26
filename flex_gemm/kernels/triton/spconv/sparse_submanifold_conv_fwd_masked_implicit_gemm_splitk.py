@@ -17,7 +17,7 @@ heuristics = {
 
 @triton_autotune(
     configs=config.autotune_config,
-    key=['LOGN', 'Ci', 'Co', 'V', 'SPLITK'],
+    key=['LOGN', 'Ci', 'Co', 'V', 'SPLITK', 'allow_tf32'],
 )
 @triton.heuristics(heuristics)
 @triton.jit
@@ -35,6 +35,7 @@ def sparse_submanifold_conv_fwd_masked_implicit_gemm_splitk_kernel(
     B2: tl.constexpr,   # Block size for Co dimension
     BK: tl.constexpr,   # Block size for K dimension (V * Ci)
     SPLITK: tl.constexpr,  # Split K dimension into multiple sub-dimensions
+    allow_tf32: tl.constexpr,  # Allow TF32 precision for matmuls
     # Huristic parameters
     valid_kernel,
     valid_kernel_seg,
@@ -90,7 +91,7 @@ def sparse_submanifold_conv_fwd_masked_implicit_gemm_splitk_kernel(
         weight_block = tl.load(weight_ptr, mask=k_mask[:, None], other=0.0)
         # Accumulate along the K dimension.
         accumulator = tl.dot(input_block, weight_block, accumulator,
-                             input_precision='tf32' if config.allow_tf32 else 'ieee')               # (B1, B2)
+                             input_precision='tf32' if allow_tf32 else 'ieee')                      # (B1, B2)
             
     # add bias
     if bias is not None and block_id_k == 0:
@@ -154,6 +155,7 @@ def sparse_submanifold_conv_fwd_masked_implicit_gemm_splitk(
             N, LOGN, Ci, Co, V,  #
             valid_kernel=valid_kernel,
             valid_kernel_seg=valid_kernel_seg,
+            allow_tf32=config.allow_tf32,
         )
         return output
     else:
@@ -165,5 +167,6 @@ def sparse_submanifold_conv_fwd_masked_implicit_gemm_splitk(
             valid_kernel=valid_kernel,
             valid_kernel_seg=valid_kernel_seg,
             SPLITK=SPLITK,
+            allow_tf32=config.allow_tf32,
         )
         return output.sum(dim=0).to(input.dtype)

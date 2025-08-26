@@ -20,7 +20,7 @@ heuristics_bwd_input = {
 
 @triton_autotune(
     configs=config.autotune_config,
-    key=['LOGN', 'Ci', 'Co', 'V', 'SPLITK'],
+    key=['LOGN', 'Ci', 'Co', 'V', 'SPLITK', 'allow_tf32'],
 )
 @triton.heuristics(heuristics_bwd_input)
 @triton.jit
@@ -37,6 +37,7 @@ def sparse_submanifold_conv_bwd_input_masked_implicit_gemm_splitk_kernel(
     B2: tl.constexpr,   # Block size for Ci dimension
     BK: tl.constexpr,   # Block size for K dimension (V * Co)
     SPLITK: tl.constexpr,  # Split K dimension
+    allow_tf32: tl.constexpr,  # Allow TF32 precision for matmuls
     # Huristic parameters
     valid_kernel,
     valid_kernel_seg,
@@ -92,7 +93,7 @@ def sparse_submanifold_conv_bwd_input_masked_implicit_gemm_splitk_kernel(
         weight_block = tl.load(weight_ptr, mask=k_mask[:, None], other=0.0)
         # Accumulate along the K dimension.
         accumulator = tl.dot(grad_output_block, weight_block, accumulator,
-                             input_precision='tf32' if config.allow_tf32 else 'ieee')                       # (B1, B2)
+                             input_precision='tf32' if allow_tf32 else 'ieee')                              # (B1, B2)
                 
     # Write back the block of the output matrix with masks.
     grad_input_offset_n = offset_sorted_n
@@ -104,7 +105,7 @@ def sparse_submanifold_conv_bwd_input_masked_implicit_gemm_splitk_kernel(
     
 @triton_autotune(
     configs=config.autotune_config,
-    key=['LOGN', 'Ci', 'Co', 'V', 'SPLITK'],
+    key=['LOGN', 'Ci', 'Co', 'V', 'SPLITK', 'allow_tf32'],
 )
 @triton.jit
 def sparse_submanifold_conv_bwd_weight_masked_implicit_gemm_splitk_kernel(
@@ -121,6 +122,7 @@ def sparse_submanifold_conv_bwd_weight_masked_implicit_gemm_splitk_kernel(
     B2: tl.constexpr,   # Block size for Ci dimension
     BK: tl.constexpr,   # Block size for K dimension (N)
     SPLITK: tl.constexpr,  # Split K dimension
+    allow_tf32: tl.constexpr,  # Allow TF32 precision for matmuls
 ):
     """
     Sparse submanifold convolution backward to weight kernel using implicit GEMM.
@@ -170,7 +172,7 @@ def sparse_submanifold_conv_bwd_weight_masked_implicit_gemm_splitk_kernel(
         grad_output_block = tl.load(grad_output_ptr, mask=mask[None, :], other=0.0)
         # Accumulate along the K dimension.
         accumulator = tl.dot(grad_output_block, input_block, accumulator,
-                             input_precision='tf32' if config.allow_tf32 else 'ieee')               # (B1, B2)
+                             input_precision='tf32' if allow_tf32 else 'ieee')                      # (B1, B2)
         # Advance pointers.
         valid_signal_i_ptr += BK
         valid_signal_o_ptr += BK
@@ -231,6 +233,7 @@ def sparse_submanifold_conv_bwd_input_masked_implicit_gemm_splitk(
             N, LOGN, Ci, Co, V,
             valid_kernel=valid_kernel,
             valid_kernel_seg=valid_kernel_seg,
+            allow_tf32=config.allow_tf32,
         )
         return grad_input
     else:
@@ -246,6 +249,7 @@ def sparse_submanifold_conv_bwd_input_masked_implicit_gemm_splitk(
             valid_kernel=valid_kernel,
             valid_kernel_seg=valid_kernel_seg,
             SPLITK=SPLITK,
+            allow_tf32=config.allow_tf32,
         )
         return grad_input.sum(0).to(weight.dtype)
     
@@ -296,6 +300,7 @@ def sparse_submanifold_conv_bwd_weight_masked_implicit_gemm_splitk(
             valid_signal_seg,
             grad_weight,
             N, LOGN, Ci, Co, V,
+            allow_tf32=config.allow_tf32,
         )
         return grad_weight
     else:
@@ -310,6 +315,7 @@ def sparse_submanifold_conv_bwd_weight_masked_implicit_gemm_splitk(
             grad_weight,
             N, LOGN, Ci, Co, V,
             SPLITK=SPLITK,
+            allow_tf32=config.allow_tf32,
         )
         return grad_weight.sum(0).to(input.dtype)
 
