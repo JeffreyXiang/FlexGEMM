@@ -17,6 +17,7 @@ def sparse_submanifold_conv_bwd_input_implicit_gemm_kernel(
     weight,
     neighbor,
     grad_input,
+    invalid_neigh,
     # Tensor dimensions
     N, LOGN, Ci, Co, V: tl.constexpr,
     # Meta-parameters
@@ -53,7 +54,7 @@ def sparse_submanifold_conv_bwd_input_implicit_gemm_kernel(
         bk = k % num_k
         # Calculate pointers to grad_output matrix.
         neighbor_offset_n = tl.load(neighbor + offset_n * V + V - 1 - v)  # (B1,)
-        mask = neighbor_offset_n != 0xffffffff
+        mask = neighbor_offset_n != invalid_neigh
         grad_output_ptr = grad_output + bk * BK + (neighbor_offset_n[:, None] * Co + offset_k[None, :])  # (B1, BK)
         # Calculate pointers to weight matrix.
         weight_ptr = weight + (((offset_k[:, None] + bk * BK) * V + v) * Ci + offset_ci[None, :])        # (BK, B2)
@@ -89,6 +90,7 @@ def sparse_submanifold_conv_bwd_weight_implicit_gemm_kernel(
     input,
     neighbor,
     grad_weight,
+    invalid_neigh,
     # Tensor dimensions
     N, LOGN, Ci, Co, V: tl.constexpr,
     # Meta-parameters
@@ -126,11 +128,11 @@ def sparse_submanifold_conv_bwd_weight_implicit_gemm_kernel(
     for k in range(num_k):
         mask = offset_k < N - k * BK
         # Calculate pointers to input matrix.
-        input_offset_n = tl.load(neighbor_ptr, mask=mask[:, None], other=0xffffffff)   # (BK, BV)
+        input_offset_n = tl.load(neighbor_ptr, mask=mask[:, None], other=invalid_neigh)   # (BK, BV)
         input_ptr = input + (input_offset_n[:, :, None] * Ci + offset_ci[None, None, :])                # (BK, BV, BCi)
         # Load the next block of input and weight.
         grad_output_block = tl.load(grad_output_ptr, mask=mask[None, :], other=0.0)
-        input_block = tl.load(input_ptr, mask=input_offset_n[:, :, None] != 0xffffffff, other=0.0).reshape(BK, BV * BCi)
+        input_block = tl.load(input_ptr, mask=input_offset_n[:, :, None] != invalid_neigh, other=0.0).reshape(BK, BV * BCi)
         # Accumulate along the K dimension.
         accumulator = tl.dot(grad_output_block, input_block, accumulator)           # (B1, BV * BCi)
         # Advance pointers.
@@ -152,6 +154,7 @@ def sparse_submanifold_conv_bwd_implicit_gemm(
     weight: torch.Tensor,
     bias: torch.Tensor,
     neighbor: torch.Tensor,
+    invalid_neigh: int = 0xffffffff
 ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
     assert grad_output.is_contiguous(), "Matrix grad_output must be contiguous"
     assert input.shape[1] == weight.shape[2], "Incompatible dimensions"
@@ -174,6 +177,7 @@ def sparse_submanifold_conv_bwd_implicit_gemm(
             weight,
             neighbor,
             grad_input,
+            invalid_neigh,
             N, LOGN, Ci, Co, V,
         )
         
@@ -188,6 +192,7 @@ def sparse_submanifold_conv_bwd_implicit_gemm(
             input,
             neighbor,
             grad_weight,
+            invalid_neigh,
             N, LOGN, Ci, Co, V,
         )
         
