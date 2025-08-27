@@ -187,6 +187,26 @@ class GridSample3dFunction(Function):
                 return GridSample3dFunction._trilinear_bwd(ctx, grad_output)
         else:
             return None, None, None, None, None
-        
 
-grid_sample_3d = GridSample3dFunction.apply
+
+def grid_sample_3d(
+    feats: torch.Tensor,
+    coords: torch.Tensor,
+    shape: torch.Size,
+    grid: torch.Tensor,
+    mode: str = "trilinear",
+) -> torch.Tensor:
+    """
+    Samples the input sparse tensor at the given points using the specified interpolation mode.
+    
+    Args:
+        feats (torch.Tensor): A [N, C] tensor containing the features to sample from
+        coords (torch.Tensor): A [N, ..., 4] tensor containing the coordinates of the features
+        shape (torch.Size): The spatial shape of the sparse tensor
+        grid (torch.Tensor): A [B, L, 3] tensor containing the query points
+        mode (str): The interpolation mode to use (nearest, trilinear)
+    
+    Returns:
+        torch.Tensor: A [B, L, C] tensor containing the sampled features
+    """
+    return GridSample3dFunction.apply(feats, coords, shape, grid, mode)

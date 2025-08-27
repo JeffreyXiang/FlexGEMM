@@ -341,4 +341,31 @@ class SubMConv3dFunction(Function):
         return grad_input, None, None, None, grad_weight, grad_bias, None
 
 
-sparse_submanifold_conv3d = SubMConv3dFunction.apply
+def sparse_submanifold_conv3d(
+    feats: torch.Tensor,
+    coords: torch.Tensor,
+    shape: torch.Size,
+    weight: torch.Tensor,
+    bias: Optional[torch.Tensor] = None,
+    neighbor_cache: Optional[SubMConv3dNeighborCache] = None,
+    dilation: Tuple[int, int, int] = (1, 1, 1),
+) -> Tuple[torch.Tensor, SubMConv3dNeighborCache]:
+    """
+    Sparse submanifold convolution for 3D input.
+
+    Args:
+        feats (torch.Tensor): [N, C] tensor of input features.
+        coords (torch.Tensor): [N, 4] tensor of input coordinates.
+        shape (torch.Size): shape of the input tensor in NCWHD order.
+        weight (torch.Tensor): [Co, Kd, Kh, Kw, Ci] tensor of weights.
+        bias (Optional[torch.Tensor]): [Co] tensor of biases.
+        neighbor_cache (Optional[SubMConv3dNeighborCache]): neighbor cache for forward.
+            if None, will be computed in forward.
+        dilation (Tuple[int, int, int]): dilation rate.
+
+    Returns:
+        Tuple[torch.Tensor, SubMConv3dNeighborCache]:
+            - output (torch.Tensor): [N, Co] tensor of output features.
+            - neighbor_cache (SubMConv3dNeighborCache): neighbor cache for backward.
+    """
+    return SubMConv3dFunction.apply(feats, coords, shape, neighbor_cache, weight, bias, dilation)
