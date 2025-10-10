@@ -348,18 +348,26 @@ def save_autotune_cache(path=None):
                     cache[device_name][cache_key] = {k: v.__dict__ for k, v in attr.cache.items()}
 
         walk_package('flex_gemm', save_cache)
-        with open(path, 'w') as f:
+
+        tmp_path = path + ".tmp"
+        with open(tmp_path, 'w') as f:
             json.dump(cache, f, indent=4)
             f.flush()
             os.fsync(f.fileno())
+        os.replace(tmp_path, path)
         
         
 def load_autotune_cache(path=None):
     path = path or AUTOTUNE_CACHE_PATH
+    lock_path = path + ".lock"
+
     if not os.path.exists(path):
         return
-    with open(path, 'r') as f:
-        cache = json.load(f)
+
+    with FileLock(lock_path):
+        with open(path, 'r') as f:
+            cache = json.load(f)
+
     device_name = torch.cuda.get_device_name()
     if device_name not in cache:
         return
