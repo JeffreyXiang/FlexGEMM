@@ -8,13 +8,11 @@ def get_gpu_name():
 
 
 def get_platform_name():
-    name = get_gpu_name()
-    if 'NVIDIA' in name:
+    if torch.cuda.is_available():
+        if getattr(torch.version, 'hip', None) is not None:
+            return 'hip'
         return 'cuda'
-    elif 'AMD' in name:
-        return 'hip'
-    else:
-        return 'unknown'
+    return 'unknown'
     
 
 def get_num_sm():
