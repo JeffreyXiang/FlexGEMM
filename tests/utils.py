@@ -16,12 +16,12 @@ def sphere_coords(res, ch, device='cuda', dtype=torch.float):
                 ), dim=-1).int().contiguous()
                 dist = ((coords.float() - res / 2 + 0.5) ** 2).sum(dim=-1).sqrt()
                 active = (dist <= res / 2) & (dist >= res / 2 - 1.25)
-                coords = torch.nonzero(active).int()
+                coords = torch.nonzero(active).int() + torch.tensor([i, j, k], device=device, dtype=torch.int32)
                 l_coords.append(coords)
     coords = torch.cat(l_coords, dim=0)
     coords = torch.cat([torch.zeros(coords.shape[0], 1, device=device, dtype=torch.int32), coords], dim=-1)
     feats = torch.randn(coords.shape[0], ch, device=device, dtype=dtype)
-    return feats, coords, torch.Size([1, ch, res, res, res])
+    return feats.contiguous(), coords.contiguous(), torch.Size([1, ch, res, res, res])
 
 
 def calc_err(src, ref):

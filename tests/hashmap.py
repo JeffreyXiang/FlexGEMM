@@ -66,7 +66,7 @@ def test_hashmap():
                 else:
                     raise e
                 
-            assert torch.all(values == values_), f"Hashmap lookup failed for res={res}"
+            assert torch.all(values == values_), f"Hashmap lookup failed for res={res}, dtype_key={dtype_key}, dtype_value={dtype_value}"
             
         time_insert = f"{time_insert / cnt_insert:.5f}s" if cnt_insert > 0 else "N/A"
         memory_insert = "OOM" if oom_insert else f"{memory_insert / cnt_insert:.5f}G" if cnt_insert > 0 else "N/A"
