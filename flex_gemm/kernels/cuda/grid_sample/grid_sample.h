@@ -16,6 +16,9 @@
 #define BLOCK_SIZE 256
 
 
+namespace flex_gemm {
+namespace grid_sample {
+
 /**
  * Build the neighbor map for grid sample with nearest interpolation
  * 
@@ -64,3 +67,6 @@ std::tuple<torch::Tensor, torch::Tensor> hashmap_build_grid_sample_3d_trilinear_
     const int H,
     const int D
 );
+
+} // namespace grid_sample
+} // namespace flex_gemm

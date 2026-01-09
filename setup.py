@@ -27,14 +27,14 @@ else:
 
 if platform.system() == "Windows":
     extra_compile_args = {
-        "cxx": ["/O2", "/std:c++17", "/EHsc"],
+        "cxx": ["/O2", "/std:c++17", "/EHsc", "/openmp"],
         "nvcc": ["-O3", "-std=c++17"] + cc_flag,
     }
 else:
     # Match PyTorch's CXX11 ABI setting
     cxx11_abi = "1" if torch.compiled_with_cxx11_abi() else "0"
     extra_compile_args = {
-        "cxx": ["-O3", "-std=c++17", f"-D_GLIBCXX_USE_CXX11_ABI={cxx11_abi}"],
+        "cxx": ["-O3", "-std=c++17", "-fopenmp", f"-D_GLIBCXX_USE_CXX11_ABI={cxx11_abi}"],
         "nvcc": ["-O3", "-std=c++17"] + cc_flag,
     }
 
@@ -57,6 +57,8 @@ setup(
             sources=[
                 # Hashmap functions
                 "flex_gemm/kernels/cuda/hash/hash.cu",
+                # Serialization functions
+                "flex_gemm/kernels/cuda/serialize/api.cu",
                 # Grid sample functions
                 "flex_gemm/kernels/cuda/grid_sample/grid_sample.cu",
                 # Convolution functions

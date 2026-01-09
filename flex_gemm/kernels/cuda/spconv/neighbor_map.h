@@ -16,6 +16,9 @@
 #define BLOCK_SIZE 256
 
 
+namespace flex_gemm {
+namespace spconv {
+
 /**
  * Build sparse submanifold convolution neighbor map with hashmap
  * 
@@ -81,3 +84,6 @@ std::tuple<torch::Tensor, torch::Tensor> neighbor_map_post_process_for_masked_im
     const torch::Tensor& sorted_idx,
     int block_size
 );
+
+} // namespace spconv
+} // namespace flex_gemm

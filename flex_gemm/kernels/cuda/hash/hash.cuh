@@ -1,3 +1,6 @@
+namespace flex_gemm {
+namespace hash {
+
 // 32 bit Murmur3 hash
 __forceinline__ __device__ size_t hash(uint32_t k, size_t N) {
     k ^= k >> 16;
@@ -85,3 +88,6 @@ __forceinline__ __device__ V linear_probing_lookup(
         if (slot >= N) slot = 0;
     }
 }
+
+} // namespace hash
+} // namespace flex_gemm

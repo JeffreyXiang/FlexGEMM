@@ -7,6 +7,9 @@
 #include "../hash/hash.cuh"
 
 
+namespace flex_gemm {
+namespace spconv {
+
 /**
  * Lookup sparse submanifold convolution neighbor map with hashmap
  * 
@@ -69,7 +72,7 @@ __global__ void hashmap_lookup_submanifold_conv_neighbour_map_cuda_kernel(
             if (kx >= 0 && kx < W && ky >= 0 && ky < H && kz >= 0 && kz < D) {
                 size_t flat_idx = (size_t)b * W * H * D + (size_t)kx * H * D + (size_t)ky * D + (size_t)kz;
                 T key = static_cast<T>(flat_idx);
-                value = linear_probing_lookup(hashmap_keys, hashmap_vals, key, N);
+                value = flex_gemm::hash::linear_probing_lookup(hashmap_keys, hashmap_vals, key, N);
                 if (value != std::numeric_limits<uint32_t>::max()) {
                     neighbor[value * V + V - 1 - v] = idx;
                 }
@@ -116,7 +119,7 @@ torch::Tensor hashmap_build_submanifold_conv_neighbour_map_cuda(
     int V = Kw * Kh * Kd;
 
     // Insert 3D coordinates into the hashmap
-    hashmap_insert_3d_idx_as_val_cuda(
+    flex_gemm::hash::hashmap_insert_3d_idx_as_val_cuda(
         hashmap_keys,
         hashmap_vals,
         coords,
@@ -447,4 +450,5 @@ std::tuple<torch::Tensor, torch::Tensor> neighbor_map_post_process_for_masked_im
     return std::make_tuple(valid_kernel_idx, seglen);
 }
 
-
+} // namespace spconv
+} // namespace flex_gemm

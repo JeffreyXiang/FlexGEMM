@@ -6,6 +6,9 @@
 #include "hash.cuh"
 
 
+namespace flex_gemm {
+namespace hash {
+
 template<typename K, typename V>
 static __global__ void hashmap_insert_cuda_kernel(
     const size_t N,
@@ -444,3 +447,6 @@ void hashmap_insert_3d_idx_as_val_cuda(
         TORCH_CHECK(false, "Unsupported data type");
     }
 }
+
+} // namespace hash
+} // namespace flex_gemm

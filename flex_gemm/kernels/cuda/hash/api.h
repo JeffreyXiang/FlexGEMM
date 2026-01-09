@@ -16,6 +16,9 @@
 #define BLOCK_SIZE 256
 
 
+namespace flex_gemm {
+namespace hash {
+
 /**
  * Insert keys into the hashmap
  * 
@@ -109,3 +112,6 @@ void hashmap_insert_3d_idx_as_val_cuda(
     int H,
     int D
 );
+
+} // namespace hash
+} // namespace flex_gemm

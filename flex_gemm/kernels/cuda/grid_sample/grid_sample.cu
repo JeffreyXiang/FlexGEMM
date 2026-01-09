@@ -7,6 +7,9 @@
 #include "../hash/hash.cuh"
 
 
+namespace flex_gemm {
+namespace grid_sample {
+
 /**
  * Lookup grid sample neighbor map using hashmap
  * 
@@ -43,7 +46,7 @@ __global__ void hashmap_lookup_grid_sample_3d_nearest_neighbor_map_kernel(
         if (x >= 0 && x < W && y >= 0 && y < H && z >= 0 && z < D) {
             size_t flat_idx = (size_t)b * W * H * D + (size_t)x * H * D + (size_t)y * D + (size_t)z;
             T key = static_cast<T>(flat_idx);
-            uint32_t value = linear_probing_lookup(hashmap_keys, hashmap_vals, key, N);
+            uint32_t value = flex_gemm::hash::linear_probing_lookup(hashmap_keys, hashmap_vals, key, N);
             if (value != std::numeric_limits<uint32_t>::max()) {
                 neighbor[thread_id] = value;
             }
@@ -78,7 +81,7 @@ torch::Tensor hashmap_build_grid_sample_3d_nearest_neighbor_map(
     auto neighbor = torch::full({grid.size(0), grid.size(1)}, std::numeric_limits<uint32_t>::max(), torch::dtype(torch::kUInt32).device(hashmap_keys.device()));
 
     // Insert 3D coordinates into the hashmap
-    hashmap_insert_3d_idx_as_val_cuda(
+    flex_gemm::hash::hashmap_insert_3d_idx_as_val_cuda(
         hashmap_keys,
         hashmap_vals,
         coords,
@@ -176,7 +179,7 @@ __global__ void hashmap_lookup_grid_sample_3d_trilinear_neighbor_map_weight_kern
             if (x >= 0 && x < W && y >= 0 && y < H && z >= 0 && z < D) {
                 size_t flat_idx = (size_t)b * W * H * D + (size_t)x * H * D + (size_t)y * D + (size_t)z;
                 T key = static_cast<T>(flat_idx);
-                uint32_t value = linear_probing_lookup(hashmap_keys, hashmap_vals, key, N);
+                uint32_t value = flex_gemm::hash::linear_probing_lookup(hashmap_keys, hashmap_vals, key, N);
                 if (value != std::numeric_limits<uint32_t>::max()) {
                     n[i] = value;
                     w[i] = (1 - abs(q.x - x - 0.5f)) * (1 - abs(q.y - y - 0.5f)) * (1 - abs(q.z - z - 0.5f));
@@ -227,7 +230,7 @@ std::tuple<torch::Tensor, torch::Tensor> hashmap_build_grid_sample_3d_trilinear_
     auto weight = torch::zeros({grid.size(0), grid.size(1), 8}, torch::dtype(torch::kFloat32).device(hashmap_keys.device()));
 
     // Insert 3D coordinates into the hashmap
-    hashmap_insert_3d_idx_as_val_cuda(
+    flex_gemm::hash::hashmap_insert_3d_idx_as_val_cuda(
         hashmap_keys,
         hashmap_vals,
         coords,
@@ -277,3 +280,6 @@ std::tuple<torch::Tensor, torch::Tensor> hashmap_build_grid_sample_3d_trilinear_
 
     return std::make_tuple(neighbor, weight);
 }
+
+} // namespace grid_sample
+} // namespace flex_gemm
