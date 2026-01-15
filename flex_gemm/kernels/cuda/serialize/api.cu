@@ -8,27 +8,24 @@ namespace flex_gemm {
 namespace serialize {
 
 void z_order_encode(
-    const torch::Tensor& x,
-    const torch::Tensor& y,
-    const torch::Tensor& z,
+    const torch::Tensor& coords,
+    const size_t bit_length,
     torch::Tensor& codes
 ) {
     // Call kernel
-    if (x.device().type() == torch::kCUDA) {
+    if (coords.device().type() == torch::kCUDA) {
         if (codes.dtype() == torch::kInt32) {
-            cuda::z_order_encode<<<(x.size(0) + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>(
-                x.size(0),
-                reinterpret_cast<uint32_t*>(x.contiguous().data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(y.contiguous().data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(z.contiguous().data_ptr<int>()),
+            cuda::z_order_encode<<<(coords.size(0) + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>(
+                coords.size(0),
+                reinterpret_cast<const uint32_t*>(coords.data_ptr<int>()),
+                bit_length,
                 reinterpret_cast<uint32_t*>(codes.data_ptr<int>())
             );
         } else if (codes.dtype() == torch::kInt64) {
-            cuda::z_order_encode<<<(x.size(0) + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>(
-                x.size(0),
-                reinterpret_cast<uint32_t*>(x.contiguous().data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(y.contiguous().data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(z.contiguous().data_ptr<int>()),
+            cuda::z_order_encode<<<(coords.size(0) + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>(
+                coords.size(0),
+                reinterpret_cast<const uint32_t*>(coords.data_ptr<int>()),
+                bit_length,
                 reinterpret_cast<uint64_t*>(codes.data_ptr<int64_t>())
             );
         } else {
@@ -37,18 +34,16 @@ void z_order_encode(
     } else {
         if (codes.dtype() == torch::kInt32) {
             cpu::z_order_encode(
-                x.size(0),
-                reinterpret_cast<uint32_t*>(x.contiguous().data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(y.contiguous().data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(z.contiguous().data_ptr<int>()),
+                coords.size(0),
+                reinterpret_cast<const uint32_t*>(coords.data_ptr<int>()),
+                bit_length,
                 reinterpret_cast<uint32_t*>(codes.data_ptr<int>())
             );
         } else if (codes.dtype() == torch::kInt64) {
             cpu::z_order_encode(
-                x.size(0),
-                reinterpret_cast<uint32_t*>(x.contiguous().data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(y.contiguous().data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(z.contiguous().data_ptr<int>()),
+                coords.size(0),
+                reinterpret_cast<const uint32_t*>(coords.data_ptr<int>()),
+                bit_length,
                 reinterpret_cast<uint64_t*>(codes.data_ptr<int64_t>())
             );
         } else {
@@ -58,13 +53,12 @@ void z_order_encode(
 }
 
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> z_order_decode(
-    const torch::Tensor& codes
+torch::Tensor z_order_decode(
+    const torch::Tensor& codes,
+    const size_t bit_length
 ) {
     // Allocate output tensors
-    torch::Tensor x = torch::empty_like(codes, torch::dtype(torch::kInt32));
-    torch::Tensor y = torch::empty_like(codes, torch::dtype(torch::kInt32));
-    torch::Tensor z = torch::empty_like(codes, torch::dtype(torch::kInt32));
+    auto coords = torch::empty({codes.size(0), 4}, torch::dtype(torch::kInt32).device(codes.device()));
 
     // Call kernel
     if (codes.device().type() == torch::kCUDA) {
@@ -72,17 +66,15 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> z_order_decode(
             cuda::z_order_decode<<<(codes.size(0) + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>(
                 codes.size(0),
                 reinterpret_cast<uint32_t*>(codes.contiguous().data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(x.data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(y.data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(z.data_ptr<int>())
+                bit_length,
+                reinterpret_cast<uint32_t*>(coords.data_ptr<int>())
             );
         } else if (codes.dtype() == torch::kInt64) {
             cuda::z_order_decode<<<(codes.size(0) + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>(
                 codes.size(0),
                 reinterpret_cast<uint64_t*>(codes.contiguous().data_ptr<int64_t>()),
-                reinterpret_cast<uint32_t*>(x.data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(y.data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(z.data_ptr<int>())
+                bit_length,
+                reinterpret_cast<uint32_t*>(coords.data_ptr<int>())
             );
         } else {
             throw std::runtime_error("Unsupported input type");
@@ -92,49 +84,44 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> z_order_decode(
             cpu::z_order_decode(
                 codes.size(0),
                 reinterpret_cast<uint32_t*>(codes.contiguous().data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(x.data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(y.data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(z.data_ptr<int>())
+                bit_length,
+                reinterpret_cast<uint32_t*>(coords.data_ptr<int>())
             );
         } else if (codes.dtype() == torch::kInt64) {
             cpu::z_order_decode(
                 codes.size(0),
                 reinterpret_cast<uint64_t*>(codes.contiguous().data_ptr<int64_t>()),
-                reinterpret_cast<uint32_t*>(x.data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(y.data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(z.data_ptr<int>())
+                bit_length,
+                reinterpret_cast<uint32_t*>(coords.data_ptr<int>())
             );
         } else {
             throw std::runtime_error("Unsupported input type");
         }
     }
 
-    return std::make_tuple(x, y, z);
+    return coords;
 }
 
 
 void hilbert_encode(
-    const torch::Tensor& x,
-    const torch::Tensor& y,
-    const torch::Tensor& z,
+    const torch::Tensor& coords,
+    const size_t bit_length,
     torch::Tensor& codes
 ) {
     // Call kernel
-    if (x.device().type() == torch::kCUDA) {
+    if (coords.device().type() == torch::kCUDA) {
         if (codes.dtype() == torch::kInt32) {
-            cuda::hilbert_encode<<<(x.size(0) + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>(
-                x.size(0),
-                reinterpret_cast<uint32_t*>(x.contiguous().data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(y.contiguous().data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(z.contiguous().data_ptr<int>()),
+            cuda::hilbert_encode<<<(coords.size(0) + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>(
+                coords.size(0),
+                reinterpret_cast<const uint32_t*>(coords.data_ptr<int>()),
+                bit_length,
                 reinterpret_cast<uint32_t*>(codes.data_ptr<int>())
             );
         } else if (codes.dtype() == torch::kInt64) {
-            cuda::hilbert_encode<<<(x.size(0) + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>(
-                x.size(0),
-                reinterpret_cast<uint32_t*>(x.contiguous().data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(y.contiguous().data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(z.contiguous().data_ptr<int>()),
+            cuda::hilbert_encode<<<(coords.size(0) + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>(
+                coords.size(0),
+                reinterpret_cast<const uint32_t*>(coords.data_ptr<int>()),
+                bit_length,
                 reinterpret_cast<uint64_t*>(codes.data_ptr<int64_t>())
             );
         } else {
@@ -143,18 +130,16 @@ void hilbert_encode(
     } else {
         if (codes.dtype() == torch::kInt32) {
             cpu::hilbert_encode(
-                x.size(0),
-                reinterpret_cast<uint32_t*>(x.contiguous().data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(y.contiguous().data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(z.contiguous().data_ptr<int>()),
+                coords.size(0),
+                reinterpret_cast<const uint32_t*>(coords.data_ptr<int>()),
+                bit_length,
                 reinterpret_cast<uint32_t*>(codes.data_ptr<int>())
             );
         } else if (codes.dtype() == torch::kInt64) {
             cpu::hilbert_encode(
-                x.size(0),
-                reinterpret_cast<uint32_t*>(x.contiguous().data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(y.contiguous().data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(z.contiguous().data_ptr<int>()),
+                coords.size(0),
+                reinterpret_cast<const uint32_t*>(coords.data_ptr<int>()),
+                bit_length,
                 reinterpret_cast<uint64_t*>(codes.data_ptr<int64_t>())
             );
         } else {
@@ -164,13 +149,12 @@ void hilbert_encode(
 }
 
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> hilbert_decode(
-    const torch::Tensor& codes
+torch::Tensor hilbert_decode(
+    const torch::Tensor& codes,
+    const size_t bit_length
 ) {
     // Allocate output tensors
-    torch::Tensor x = torch::empty_like(codes, torch::dtype(torch::kInt32));
-    torch::Tensor y = torch::empty_like(codes, torch::dtype(torch::kInt32));
-    torch::Tensor z = torch::empty_like(codes, torch::dtype(torch::kInt32));
+    auto coords = torch::empty({codes.size(0), 4}, torch::dtype(torch::kInt32).device(codes.device()));
 
     // Call kernel
     if (codes.device().type() == torch::kCUDA) {
@@ -178,17 +162,15 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> hilbert_decode(
             cuda::hilbert_decode<<<(codes.size(0) + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>(
                 codes.size(0),
                 reinterpret_cast<uint32_t*>(codes.contiguous().data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(x.data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(y.data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(z.data_ptr<int>())
+                bit_length,
+                reinterpret_cast<uint32_t*>(coords.data_ptr<int>())
             );
         } else if (codes.dtype() == torch::kInt64) {
             cuda::hilbert_decode<<<(codes.size(0) + BLOCK_SIZE - 1) / BLOCK_SIZE, BLOCK_SIZE>>>(
                 codes.size(0),
                 reinterpret_cast<uint64_t*>(codes.contiguous().data_ptr<int64_t>()),
-                reinterpret_cast<uint32_t*>(x.data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(y.data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(z.data_ptr<int>())
+                bit_length,
+                reinterpret_cast<uint32_t*>(coords.data_ptr<int>())
             );
         } else {
             throw std::runtime_error("Unsupported input type");
@@ -198,24 +180,22 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> hilbert_decode(
             cpu::hilbert_decode(
                 codes.size(0),
                 reinterpret_cast<uint32_t*>(codes.contiguous().data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(x.data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(y.data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(z.data_ptr<int>())
+                bit_length,
+                reinterpret_cast<uint32_t*>(coords.data_ptr<int>())
             );
         } else if (codes.dtype() == torch::kInt64) {
             cpu::hilbert_decode(
                 codes.size(0),
                 reinterpret_cast<uint64_t*>(codes.contiguous().data_ptr<int64_t>()),
-                reinterpret_cast<uint32_t*>(x.data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(y.data_ptr<int>()),
-                reinterpret_cast<uint32_t*>(z.data_ptr<int>())
+                bit_length,
+                reinterpret_cast<uint32_t*>(coords.data_ptr<int>())
             );
         } else {
             throw std::runtime_error("Unsupported input type");
         }
     }
 
-    return std::make_tuple(x, y, z);
+    return coords;
 }
 
 } // namespace serialize

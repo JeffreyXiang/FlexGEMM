@@ -12,10 +12,12 @@ def test_hashmap():
     
     test_cases = []
     for res in RES:
-        test_cases.append((res, 'z_order'))
-        test_cases.append((res, 'hilbert'))
+        test_cases.append((res, 'z_order', 'cpu'))
+        test_cases.append((res, 'z_order', 'cuda'))
+        test_cases.append((res, 'hilbert', 'cpu'))
+        test_cases.append((res, 'hilbert', 'cuda'))
     
-    for res, mode in tqdm(test_cases, leave=False):
+    for res, mode, device in tqdm(test_cases, leave=False):
         time_enc = 0
         memory_enc = 0
         oom_enc = False
@@ -25,13 +27,13 @@ def test_hashmap():
         oom_dec = False
         cnt_dec = 0
         feats, coords, shape = sphere_coords(res, 0)
-        coords = coords[:, :3].contiguous()
+        coords = coords.to(device)
         for i in range(110):
             torch.cuda.synchronize()
             torch.cuda.reset_peak_memory_stats()
             start_enc = time.time()
             try:
-                codes = ops.serialize.encode_seq(coords, torch.Size([res, res, res]), mode=mode)
+                codes = ops.serialize.encode_seq(coords, shape, mode=mode)
                 torch.cuda.synchronize()
                 end_enc = time.time()
                 if i > 10:
@@ -48,7 +50,7 @@ def test_hashmap():
             torch.cuda.reset_peak_memory_stats()
             start_dec = time.time()
             try:
-                coords_ = ops.serialize.decode_seq(codes, mode=mode)
+                coords_ = ops.serialize.decode_seq(codes, shape, mode=mode)
                 torch.cuda.synchronize()
                 end_dec = time.time()
                 if i > 10:
@@ -61,13 +63,13 @@ def test_hashmap():
                 else:
                     raise e
                 
-            assert torch.all(coords == coords_), f"Hashmap lookup failed for res={res}, mode={mode}"
+            assert torch.all(coords == coords_), f"Serialization failed for res={res}, mode={mode}"
             
         time_enc = f"{time_enc / cnt_enc:.5f}s" if cnt_enc > 0 else "N/A"
         memory_enc = "OOM" if oom_enc else f"{memory_enc / cnt_enc:.5f}G" if cnt_enc > 0 else "N/A"
         time_dec = f"{time_dec / cnt_dec:.5f}s" if cnt_dec > 0 else "N/A"
         memory_dec = "OOM" if oom_dec else f"{memory_dec / cnt_dec:.5f}G" if cnt_dec > 0 else "N/A"
-        records[f"res={res}, mode={mode}"] = {
+        records[f"res={res}, mode={mode}, device={device}"] = {
             'encode': f"{time_enc} | {memory_enc}",
             'decode': f"{time_dec} | {memory_dec}",
         }

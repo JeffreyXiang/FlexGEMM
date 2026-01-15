@@ -22,15 +22,13 @@ namespace serialize {
 /**
  * Z-order encode 3D points
  *
- * @param x [N] tensor containing the x coordinates
- * @param y [N] tensor containing the y coordinates
- * @param z [N] tensor containing the z coordinates
- * @param codes [N] tensor containing the z-order encoded values
+ * @param coords        [N, 4] tensor containing the b, x, y, z coordinates
+ * @param bit_length    bit length of the coordinates
+ * @param codes         [N] tensor containing the z-order encoded values
  */
 void z_order_encode(
-    const torch::Tensor& x,
-    const torch::Tensor& y,
-    const torch::Tensor& z,
+    const torch::Tensor& coords,
+    const size_t bit_length,
     torch::Tensor& codes
 );
 
@@ -38,27 +36,27 @@ void z_order_encode(
 /**
  * Z-order decode 3D points
  *
- * @param codes [N] tensor containing the z-order encoded values
+ * @param codes         [N] tensor containing the z-order encoded values
+ * @param bit_length    bit length of the coordinates
  *
- * @return 3 tensors [N] containing the x, y, z coordinates
+ * @return [N, 4] tensor containing the b, x, y, z coordinates
  */
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> z_order_decode(
-    const torch::Tensor& codes
+torch::Tensor z_order_decode(
+    const torch::Tensor& codes,
+    const size_t bit_length
 );
 
 
 /**
  * Hilbert encode 3D points
  *
- * @param x [N] tensor containing the x coordinates
- * @param y [N] tensor containing the y coordinates
- * @param z [N] tensor containing the z coordinates
- * @param codes [N] tensor containing the Hilbert encoded values
+ * @param coords        [N, 4] tensor containing the b, x, y, z coordinates
+ * @param bit_length    bit length of the coordinates
+ * @param codes         [N] tensor containing the Hilbert encoded values
  */
 void hilbert_encode(
-    const torch::Tensor& x,
-    const torch::Tensor& y,
-    const torch::Tensor& z,
+    const torch::Tensor& coords,
+    const size_t bit_length,
     torch::Tensor& codes
 );
 
@@ -66,12 +64,14 @@ void hilbert_encode(
 /**
  * Hilbert decode 3D points
  *
- * @param codes [N] tensor containing the Hilbert encoded values
+ * @param codes         [N] tensor containing the Hilbert encoded values
+ * @param bit_length    bit length of the coordinates
  *
- * @return 3 tensors [N] containing the x, y, z coordinates
+ * @return [N, 4] tensor containing the b, x, y, z coordinates
  */
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> hilbert_decode(
-    const torch::Tensor& codes
+torch::Tensor hilbert_decode(
+    const torch::Tensor& codes,
+    const size_t bit_length
 );
 
 } // namespace serialize
