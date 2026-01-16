@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flex_gemm"
-version = "0.0.1"
+version = "1.0.0"
 description = "A Cross-Platform Backend for High-Performance Sparse Convolutions"
 requires-python = ">=3.8"
 readme = "README.md"
