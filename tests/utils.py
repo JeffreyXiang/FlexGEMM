@@ -3,7 +3,7 @@ import torch
 
 
 @torch.no_grad()
-def sphere_coords(res, ch, device='cuda', dtype=torch.float):
+def sphere_coords(res, ch, batch_size=1, device='cuda', dtype=torch.float):
     l_coords = []
     for i in range(0, res, 256):
         for j in range(0, res, 256):
@@ -19,9 +19,10 @@ def sphere_coords(res, ch, device='cuda', dtype=torch.float):
                 coords = torch.nonzero(active).int() + torch.tensor([i, j, k], device=device, dtype=torch.int32)
                 l_coords.append(coords)
     coords = torch.cat(l_coords, dim=0)
-    coords = torch.cat([torch.zeros(coords.shape[0], 1, device=device, dtype=torch.int32), coords], dim=-1)
+    batch_idx = torch.arange(batch_size).repeat_interleave(coords.shape[0]).to(device).int()
+    coords = torch.cat([batch_idx.unsqueeze(-1), torch.cat([coords] * batch_size)], dim=-1)
     feats = torch.randn(coords.shape[0], ch, device=device, dtype=dtype)
-    return feats.contiguous(), coords.contiguous(), torch.Size([1, ch, res, res, res])
+    return feats.contiguous(), coords.contiguous(), torch.Size([batch_size, ch, res, res, res])
 
 
 def calc_err(src, ref):
@@ -33,6 +34,8 @@ def calc_err(src, ref):
 
 def benchmark_kernel(kernel_fn, *args, prepare_fn=None, num_warmup=2, num_iters=20, **kwargs):
     try:
+        starter = torch.cuda.Event(enable_timing=True)
+        ender = torch.cuda.Event(enable_timing=True)
         if prepare_fn is not None:
             kwargs = prepare_fn(*args, **kwargs)
             args = tuple()
@@ -42,13 +45,14 @@ def benchmark_kernel(kernel_fn, *args, prepare_fn=None, num_warmup=2, num_iters=
         torch.cuda.reset_peak_memory_stats()
         torch.cuda.synchronize()
         # Timing iterations.
-        start = time.time()
+        starter.record()
         for _ in range(num_iters):
             C = kernel_fn(*args, **kwargs)
+        ender.record()
         torch.cuda.synchronize()
-        elapsed = time.time() - start
+        elapsed = starter.elapsed_time(ender)
         memory = torch.cuda.max_memory_allocated() / 1024**3
-        avg_time_ms = (elapsed / num_iters) * 1000.0
+        avg_time_ms = elapsed / num_iters
         avg_mem_gb = memory
         if isinstance(C, tuple):
             C = torch.cat([c.detach().flatten() for c in C if c is not None], dim=0)
@@ -103,3 +107,23 @@ def lexsort(keys, dim=0):
             sorted_indices = torch.take_along_dim(sorted_indices, torch.argsort(key, dim=dim, stable=True), dim=dim)
     
     return sorted_indices
+
+
+def get_device_max_flops(dtype=torch.float):
+    TABLE = {
+        'A100': {
+            torch.float32: 19.5 * 10**12,
+            torch.float16: 312 * 10**12,
+        },
+        'H100': {
+            torch.float32: 67 * 10**12,
+            torch.float16: 989 * 10**12,
+        },
+    }
+    device_name = torch.cuda.get_device_name()
+    if 'A100' in device_name:
+        return TABLE['A100'][dtype]
+    elif 'H100' in device_name:
+        return TABLE['H100'][dtype]
+    else:
+        return None

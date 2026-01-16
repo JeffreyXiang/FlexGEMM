@@ -3,14 +3,14 @@ import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from tqdm import tqdm
 import torch
-# import spconv.pytorch as spconv
+import spconv.pytorch as spconv
 # import torchsparse
 # import torchsparse.nn
 # import torchsparse.nn.functional
 # import fvdb
 import flex_gemm
 from flex_gemm.ops.spconv import SubMConv3dFunction
-from utils import sphere_coords, calc_err, benchmark_kernel
+from utils import sphere_coords, calc_err, benchmark_kernel, get_device_max_flops
 
 
 def spconv_prepare_fn(grad_output: torch.Tensor, feats: torch.Tensor, coords: torch.Tensor, shape: torch.Size, weight: torch.Tensor, bias: torch.Tensor, **kwargs):
@@ -226,22 +226,22 @@ def migemmk_prepare_fn(coords: torch.Tensor, shape: torch.Size, weight: torch.Te
 def test_conv_bwd():
     # Matrix dimensions.
     config = [
-        {'RES': 8, 'C': 1024},
-        {'RES': 16, 'C': 1024},
-        {'RES': 32, 'C': 1024},
-        {'RES': 64, 'C': 1024},
-        {'RES': 128, 'C': 512},
-        {'RES': 256, 'C': 256},
-        {'RES': 512, 'C': 128},
-        # {'RES': 1024, 'C': 64},
-        # {'RES': 2048, 'C': 32},
+        {'RES': 8, 'C': 1024, 'B': 256},
+        {'RES': 16, 'C': 1024, 'B': 64},
+        {'RES': 32, 'C': 1024, 'B': 16},
+        {'RES': 64, 'C': 1024, 'B': 4},
+        {'RES': 128, 'C': 512, 'B': 4},
+        {'RES': 256, 'C': 256, 'B': 4},
+        {'RES': 512, 'C': 128, 'B': 4},
+        # {'RES': 1024, 'C': 64, 'B': 4},
+        # {'RES': 2048, 'C': 32, 'B': 4},
     ]
     
     # List of custom kernel functions.
     kernel_functions = {
         # 'torch_all_ref': (torch_theory_kernel_fn, torch_theory_all_prepare_fn),
-        # 'torch_req_ref': (torch_theory_kernel_fn, torch_theory_req_prepare_fn),
-        # 'spconv': (spconv_kernel_fn, spconv_prepare_fn),
+        'torch_req_ref': (torch_theory_kernel_fn, torch_theory_req_prepare_fn),
+        'spconv': (spconv_kernel_fn, spconv_prepare_fn),
         # 'torchsparse': (torchsparse_kernel_fn, torchsparse_prepare_fn),
         # 'fvdb': (fvdb_kernel_fn, fvdb_prepare_fn),
         'egemm': (SubMConv3dFunction._sparse_submanifold_conv_backward, egemm_prepare_fn),
@@ -253,12 +253,14 @@ def test_conv_bwd():
     
     reference = (SubMConv3dFunction._sparse_submanifold_conv_backward, egemm_prepare_fn)
     
+    max_flops = get_device_max_flops(torch.float16)
+    
     results = {}
     for c in tqdm(config, leave=False):
         RES, C = c['RES'], c['C']
 
         # Create random input matrices.
-        feats, coords, shape = sphere_coords(RES, C, dtype=torch.float16)
+        feats, coords, shape = sphere_coords(RES, C, B, dtype=torch.float16)
         weight = torch.randn(C, 3, 3, 3, C, device=feats.device, dtype=feats.dtype)
         bias = torch.randn(C, device=feats.device, dtype=feats.dtype)
         feats.requires_grad = True
@@ -280,7 +282,12 @@ def test_conv_bwd():
             'memory': [],
             'err_max': [],
             'err_mean': [],
+            'tflops': [],
         }
+        
+        neighbor_cache = SubMConv3dFunction._compute_neighbor_cache(coords, shape, (3, 3, 3), (1, 1, 1), False)
+        L = (neighbor_cache['neighbor_map']!=0xffffffff).sum()
+        total_flops = 4 * L * C * C
         
         # Benchmark the reference kernel.
         avg_time_ref, memory_ref, C_ref = benchmark_kernel(reference[0], **args, prepare_fn=reference[1])
@@ -297,12 +304,18 @@ def test_conv_bwd():
             else:
                 results[config_key]['err_max'].append('N/A')
                 results[config_key]['err_mean'].append('N/A')
+            if max_flops is not None:
+                real_flops = total_flops / avg_time * 1e3
+                real_tflops = real_flops / 1e12
+                results[config_key]['tflops'].append(f'{real_tflops:.2f} ({real_flops/max_flops*100:.1f}%)')
+            else:
+                results[config_key]['tflops'].append('N/A')
                 
     # Print results as a formatted table.
     print("=" * 180)
     print("SubMConv Backward Benchmark Results")
     print("=" * 180)
-    for m in ['time','memory', 'err_max', 'err_mean']:
+    for m in ['time','memory', 'err_max', 'err_mean', 'tflops']:
         print(m.capitalize())
         print("-" * 180)
         items = [f'{"settings":<15}']

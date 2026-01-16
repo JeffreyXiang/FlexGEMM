@@ -3,6 +3,7 @@ from ..utils import get_autotune_config
 
 
 allow_tf32 = True
+USE_ON_THE_FLY_WEIGHT_TRANSPOSE = True
 
 
 autotune_config = get_autotune_config(

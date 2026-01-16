@@ -2,7 +2,7 @@ from typing import *
 import torch
 from torch.autograd import Function
 from . import Algorithm, SparseConv3dOutCoordAlgorithm
-from .. import spconv, utils
+from .. import spconv
 from ... import kernels
 
 
@@ -12,7 +12,7 @@ class SparseConv3dNeighborCache:
             setattr(self, k, v)
     
     def __getitem__(self, key):
-        return getattr(self, key)
+        return getattr(self, key, None)
     
     def __setitem__(self, key, value):
         setattr(self, key, value)
@@ -31,6 +31,21 @@ class SparseConv3dNeighborCache:
         if not hasattr(self, f'valid_kernel_seg_{block_size}'):
             self.compute_kernel_idx(block_size)
         return self[f'valid_kernel_seg_{block_size}']
+    
+    def compute_kernel_idx_bwd(self, block_size: int):
+        valid_kernel, valid_kernel_seg = kernels.cuda.neighbor_map_post_process_for_masked_implicit_gemm_2(self['gray_code_bwd'], self['sorted_idx_bwd'], block_size)
+        self[f'valid_kernel_bwd_{block_size}'] = valid_kernel
+        self[f'valid_kernel_bwd_seg_{block_size}'] = valid_kernel_seg
+    
+    def valid_kernel_bwd_callback(self, block_size: int) -> torch.Tensor:
+        if not hasattr(self, f'valid_kernel_bwd_{block_size}'):
+            self.compute_kernel_idx_bwd(block_size)
+        return self[f'valid_kernel_bwd_{block_size}']
+    
+    def valid_kernel_bwd_seg_callback(self, block_size: int) -> torch.Tensor:
+        if not hasattr(self, f'valid_kernel_bwd_seg_{block_size}'):
+            self.compute_kernel_idx_bwd(block_size)
+        return self[f'valid_kernel_bwd_seg_{block_size}']
 
 
 class SparseConv3dFunction(Function):
@@ -159,7 +174,7 @@ class SparseConv3dFunction(Function):
             if needs_grad:
                 gray_code, sorted_idx, valid_signal_i, valid_signal_o, valid_signal_seg = \
                     kernels.cuda.neighbor_map_post_process_for_masked_implicit_gemm_1(neighbor_map)
-                return SparseConv3dNeighborCache(**{
+                cache = SparseConv3dNeighborCache(**{
                     'out_coords': out_coords,
                     'neighbor_map': neighbor_map,
                     'neighbor_map_bwd': neighbor_map_bwd,
@@ -169,6 +184,12 @@ class SparseConv3dFunction(Function):
                     'valid_signal_i': valid_signal_i,
                     'valid_signal_o': valid_signal_o,
                 })
+                if any([s != 1 for s in stride]):
+                    gray_code_bwd, sorted_idx_bwd = \
+                        kernels.cuda.neighbor_map_post_process_for_masked_implicit_gemm_1_no_bwd(neighbor_map_bwd)
+                    cache['gray_code_bwd'] = gray_code_bwd
+                    cache['sorted_idx_bwd'] = sorted_idx_bwd
+                return cache
             else:
                 gray_code, sorted_idx = \
                     kernels.cuda.neighbor_map_post_process_for_masked_implicit_gemm_1_no_bwd(neighbor_map)
@@ -269,7 +290,7 @@ class SparseConv3dFunction(Function):
                 output = torch.mm(im2col, weight)
         
         elif spconv.ALGORITHM == Algorithm.IMPLICIT_GEMM:
-            output = kernels.triton.indice_conv_fwd_implicit_gemm(
+            output = kernels.triton.sparse_conv_fwd_implicit_gemm(
                 feats,
                 weight.reshape(Co, Kd * Kh * Kw, Ci),
                 bias,
@@ -277,7 +298,7 @@ class SparseConv3dFunction(Function):
             )
             
         elif spconv.ALGORITHM == Algorithm.IMPLICIT_GEMM_SPLITK:
-            output = kernels.triton.indice_conv_fwd_implicit_gemm_splitk(
+            output = kernels.triton.sparse_conv_fwd_implicit_gemm_splitk(
                 feats,
                 weight.reshape(Co, Kd * Kh * Kw, Ci),
                 bias,
@@ -285,7 +306,7 @@ class SparseConv3dFunction(Function):
             )
             
         elif spconv.ALGORITHM == Algorithm.MASKED_IMPLICIT_GEMM:
-            output = kernels.triton.indice_conv_fwd_masked_implicit_gemm(
+            output = kernels.triton.sparse_conv_fwd_masked_implicit_gemm(
                 feats,
                 weight.reshape(Co, Kd * Kh * Kw, Ci),
                 bias,
@@ -296,7 +317,7 @@ class SparseConv3dFunction(Function):
             )
             
         elif spconv.ALGORITHM == Algorithm.MASKED_IMPLICIT_GEMM_SPLITK:
-            output = kernels.triton.indice_conv_fwd_masked_implicit_gemm_splitk(
+            output = kernels.triton.sparse_conv_fwd_masked_implicit_gemm_splitk(
                 feats,
                 weight.reshape(Co, Kd * Kh * Kw, Ci),
                 bias,
@@ -356,54 +377,58 @@ class SparseConv3dFunction(Function):
                 grad_bias = None
             
         elif spconv.ALGORITHM == Algorithm.IMPLICIT_GEMM:
-            grad_input, grad_weight, grad_bias = kernels.triton.indice_conv_bwd_implicit_gemm(
+            grad_input, grad_weight, grad_bias = kernels.triton.sparse_conv_bwd_implicit_gemm(
                 grad_output.contiguous(),
                 feats,
                 weight.reshape(Co, Kd * Kh * Kw, Ci),
                 bias,
-                neighbor_cache['neighbor_map']
+                neighbor_cache['neighbor_map'],
+                neighbor_cache['neighbor_map_bwd']
             )
             grad_weight = grad_weight.reshape(Co, Kw, Kh, Kd, Ci)
             
         elif spconv.ALGORITHM == Algorithm.IMPLICIT_GEMM_SPLITK:
-            grad_input, grad_weight, grad_bias = kernels.triton.indice_conv_bwd_implicit_gemm_splitk(
+            grad_input, grad_weight, grad_bias = kernels.triton.sparse_conv_bwd_implicit_gemm_splitk(
                 grad_output.contiguous(),
                 feats,
                 weight.reshape(Co, Kd * Kh * Kw, Ci),
                 bias,
-                neighbor_cache['neighbor_map']
+                neighbor_cache['neighbor_map'],
+                neighbor_cache['neighbor_map_bwd']
             )
             grad_weight = grad_weight.reshape(Co, Kw, Kh, Kd, Ci)
             
         elif spconv.ALGORITHM == Algorithm.MASKED_IMPLICIT_GEMM:
-            grad_input, grad_weight, grad_bias = kernels.triton.indice_conv_bwd_masked_implicit_gemm(
+            grad_input, grad_weight, grad_bias = kernels.triton.sparse_conv_bwd_masked_implicit_gemm(
                 grad_output.contiguous(),
                 feats,
                 weight.reshape(Co, Kd * Kh * Kw, Ci),
                 bias,
                 neighbor_cache['neighbor_map'],
-                neighbor_cache['sorted_idx'],
-                neighbor_cache['valid_kernel_callback'],
-                neighbor_cache['valid_kernel_seg_callback'],
+                neighbor_cache['neighbor_map_bwd'],
                 neighbor_cache['valid_signal_i'],
                 neighbor_cache['valid_signal_o'],
-                neighbor_cache['valid_signal_seg']
+                neighbor_cache['valid_signal_seg'],
+                neighbor_cache['sorted_idx_bwd'],
+                neighbor_cache.valid_kernel_bwd_callback,
+                neighbor_cache.valid_kernel_bwd_seg_callback
             )
             grad_weight = grad_weight.reshape(Co, Kw, Kh, Kd, Ci)
         
         elif spconv.ALGORITHM == Algorithm.MASKED_IMPLICIT_GEMM_SPLITK:
-            grad_input, grad_weight, grad_bias = kernels.triton.indice_conv_bwd_masked_implicit_gemm_splitk(
+            grad_input, grad_weight, grad_bias = kernels.triton.sparse_conv_bwd_masked_implicit_gemm_splitk(
                 grad_output.contiguous(),
                 feats,
                 weight.reshape(Co, Kd * Kh * Kw, Ci),
                 bias,
                 neighbor_cache['neighbor_map'],
-                neighbor_cache['sorted_idx'],
-                neighbor_cache['valid_kernel_callback'],
-                neighbor_cache['valid_kernel_seg_callback'],
+                neighbor_cache['neighbor_map_bwd'],
                 neighbor_cache['valid_signal_i'],
                 neighbor_cache['valid_signal_o'],
-                neighbor_cache['valid_signal_seg']
+                neighbor_cache['valid_signal_seg'],
+                neighbor_cache['sorted_idx_bwd'],
+                neighbor_cache.valid_kernel_bwd_callback,
+                neighbor_cache.valid_kernel_bwd_seg_callback
             )
             grad_weight = grad_weight.reshape(Co, Kw, Kh, Kd, Ci)
             
