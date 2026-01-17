@@ -211,10 +211,10 @@ __global__ void neighbor_map_to_gray_binary_code_and_T_map_cuda_kernel(
     while (idx < total_len) {
         int v = idx / len_n;
         int n = idx % len_n;
-        uint tmp = neigh_map[n * V + v];
-        *(uint*)&neigh_map_T[v * N + n + n_base] = tmp;
+        uint32_t tmp = neigh_map[n * V + v];
+        neigh_map_T[v * N + n + n_base] = tmp;
         tmp = tmp != std::numeric_limits<uint32_t>::max();
-        *(uint*)&neigh_mask_T[v * N + n + n_base] = tmp;
+        neigh_mask_T[v * N + n + n_base] = tmp;
         idx += BLOCK_SIZE;
     }
 
