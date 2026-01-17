@@ -446,6 +446,8 @@ class SparseConv3dFunction(Function):
         neighbor_cache: Optional[SparseConv3dNeighborCache],
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
+        stride: Tuple[int, int, int] = (1, 1, 1),
+        padding: Tuple[int, int, int] = (0, 0, 0),
         dilation: Tuple[int, int, int] = (1, 1, 1),
     ) -> Tuple[torch.Tensor, SparseConv3dNeighborCache]:
         Co, Kw, Kh, Kd, Ci = weight.shape
@@ -454,7 +456,7 @@ class SparseConv3dFunction(Function):
 
         # check if neighbor map is already computed
         if neighbor_cache is None:
-            neighbor_cache = SparseConv3dFunction._compute_neighbor_cache(coords, shape, (Kw, Kh, Kd), dilation, need_grad)
+            neighbor_cache = SparseConv3dFunction._compute_neighbor_cache(coords, shape, (Kw, Kh, Kd), stride, padding, dilation, need_grad)
             
         # compute output
         output = SparseConv3dFunction._sparse_conv_forward(feats, neighbor_cache, weight, bias)
@@ -478,7 +480,7 @@ class SparseConv3dFunction(Function):
             grad_weight = None
         if not bias.requires_grad:
             grad_bias = None
-        return grad_input, None, None, None, grad_weight, grad_bias, None
+        return grad_input, None, None, None, grad_weight, grad_bias, None, None, None
 
 
 def sparse_conv3d(
@@ -488,6 +490,8 @@ def sparse_conv3d(
     weight: torch.Tensor,
     bias: Optional[torch.Tensor] = None,
     neighbor_cache: Optional[SparseConv3dNeighborCache] = None,
+    stride: Tuple[int, int, int] = (1, 1, 1),
+    padding: Tuple[int, int, int] = (0, 0, 0),
     dilation: Tuple[int, int, int] = (1, 1, 1),
 ) -> Tuple[torch.Tensor, SparseConv3dNeighborCache]:
     """
@@ -499,13 +503,16 @@ def sparse_conv3d(
         shape (torch.Size): shape of the input tensor in NCWHD order.
         weight (torch.Tensor): [Co, Kw, Kh, Kd, Ci] tensor of weights.
         bias (Optional[torch.Tensor]): [Co] tensor of biases.
-        neighbor_cache (Optional[SparseConv3dNeighborCache]): neighbor cache for forward.
-            if None, will be computed in forward.
+        neighbor_cache (Optional[SparseConv3dNeighborCache]): neighbor cache for this operation.
+            Can be reused for multiple runs using the same coordinates.
+            if None, will be computed on the fly.
+        stride (Tuple[int, int, int]): stride of the convolution.
+        padding (Tuple[int, int, int]): padding of the convolution.
         dilation (Tuple[int, int, int]): dilation rate.
 
     Returns:
         Tuple[torch.Tensor, SparseConv3dNeighborCache]:
             - output (torch.Tensor): [N, Co] tensor of output features.
-            - neighbor_cache (SparseConv3dNeighborCache): neighbor cache for backward.
+            - neighbor_cache (SparseConv3dNeighborCache): neighbor cache for this operation.
     """
-    return SparseConv3dFunction.apply(feats, coords, shape, neighbor_cache, weight, bias, dilation)
+    return SparseConv3dFunction.apply(feats, coords, shape, neighbor_cache, weight, bias, stride, padding, dilation)

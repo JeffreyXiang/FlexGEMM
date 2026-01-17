@@ -370,13 +370,14 @@ def sparse_submanifold_conv3d(
         shape (torch.Size): shape of the input tensor in NCWHD order.
         weight (torch.Tensor): [Co, Kw, Kh, Kd, Ci] tensor of weights.
         bias (Optional[torch.Tensor]): [Co] tensor of biases.
-        neighbor_cache (Optional[SubMConv3dNeighborCache]): neighbor cache for forward.
-            if None, will be computed in forward.
+        neighbor_cache (Optional[SubMConv3dNeighborCache]): neighbor cache for this operation.
+            Can be reused for multiple runs using the same coordinates.
+            if None, will be computed on the fly.
         dilation (Tuple[int, int, int]): dilation rate.
 
     Returns:
         Tuple[torch.Tensor, SubMConv3dNeighborCache]:
             - output (torch.Tensor): [N, Co] tensor of output features.
-            - neighbor_cache (SubMConv3dNeighborCache): neighbor cache for backward.
+            - neighbor_cache (SubMConv3dNeighborCache): neighbor cache for this operation.
     """
     return SubMConv3dFunction.apply(feats, coords, shape, neighbor_cache, weight, bias, dilation)
