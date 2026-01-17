@@ -35,7 +35,7 @@ def test_hashmap():
                 hashmap_keys = torch.full((2 * coords.shape[0],), torch.iinfo(dtype_key).max, dtype=dtype_key, device=coords.device)
                 hashmap_values = torch.empty((2 * coords.shape[0],), dtype=dtype_value, device=coords.device)
                 values = torch.randint(0, torch.iinfo(dtype_value).max//2, (coords.shape[0],), device=coords.device).to(dtype_value)
-                kernels.cuda.hashmap_insert_3d_cuda(hashmap_keys, hashmap_values, coords, values, res, res, res)
+                kernels.cuda.hashmap_insert_3d(hashmap_keys, hashmap_values, coords, values, res, res, res)
             
                 torch.cuda.synchronize()
                 end_insert = time.time()
@@ -53,7 +53,7 @@ def test_hashmap():
             torch.cuda.reset_peak_memory_stats()
             start_lookup = time.time()
             try:
-                values_ = kernels.cuda.hashmap_lookup_3d_cuda(hashmap_keys, hashmap_values, coords, res, res, res)
+                values_ = kernels.cuda.hashmap_lookup_3d(hashmap_keys, hashmap_values, coords, res, res, res)
                 torch.cuda.synchronize()
                 end_lookup = time.time()
                 if i > 10:

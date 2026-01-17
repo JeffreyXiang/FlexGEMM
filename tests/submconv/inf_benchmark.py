@@ -1,3 +1,6 @@
+import os
+import sys
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import numpy as np
@@ -145,7 +148,7 @@ def flex_gemm_prepare_fn(feats: torch.Tensor, coords: torch.Tensor, shape: torch
 
 def flex_gemm_kernel_fn(params, feats, coords, shape):
     zero_grad(params.parameters())
-    neighbor_cache = SubMConv3dFunction._compute_neighbor_cache(coords, shape, (3, 3, 3), (1, 1, 1))
+    neighbor_cache = SubMConv3dFunction._compute_neighbor_cache(coords, shape, (3, 3, 3), (1, 1, 1), False)
     h = feats
     for i in range(len(params)):
         weight = params[f'layer{i}']['weight']
@@ -163,7 +166,8 @@ def test_conv_fwd():
         {'RES': 128, 'C': 512, 'L': 2},
         {'RES': 256, 'C': 256, 'L': 2},
         {'RES': 512, 'C': 128, 'L': 2},
-        {'RES': 1024, 'C': 64, 'L': 2},
+        # {'RES': 1024, 'C': 64, 'L': 2},
+        # {'RES': 2048, 'C': 64, 'L': 1},
     ]
     
     # List of custom kernel functions.
@@ -204,7 +208,7 @@ def test_conv_fwd():
                 
     # Print results as a formatted table.
     print("=" * 180)
-    print("Conv Forward Benchmark Results")
+    print("SubMConv Inference Benchmark Results")
     print("=" * 180)
     for m in ['time','memory']:
         print(m.capitalize())

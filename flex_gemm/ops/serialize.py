@@ -21,8 +21,8 @@ def encode_seq(
     N, C, H, W, D = shape
     
     max_coord = max(H, W, D)
-    bit_length = max_coord.bit_length()
-    batch_bit_length = N.bit_length()
+    bit_length = (max_coord - 1).bit_length()
+    batch_bit_length = (N - 1).bit_length()
     total_bit_length = batch_bit_length + bit_length * 3
     
     if total_bit_length <= 32:
@@ -58,7 +58,7 @@ def decode_seq(
     assert code.ndim == 1, "Input code must be of shape [N]"
     N, C, H, W, D = shape
     max_coord = max(H, W, D)
-    bit_length = max_coord.bit_length()
+    bit_length = (max_coord - 1).bit_length()
     
     if mode == 'z_order':
         coords = kernels.cuda.z_order_decode(code, bit_length)
