@@ -3,7 +3,7 @@ import math
 import torch
 import triton
 import triton.language as tl
-from ..utils import get_num_sm
+from ...utils import get_num_sm
 from ....utils.autotuner import triton_autotune, autotune
 from . import config
 from .sparse_conv_implicit_gemm import (
@@ -39,7 +39,7 @@ def sparse_conv_fwd_implicit_gemm_splitk_kernel(
     TRANSPOSE_WEIGHT: tl.constexpr = False,  # Whether to transpose the weight matrix
 ):
     """
-    Indice convolution forward kernel using implicit GEMM with split K dimension.
+    Sparse convolution forward kernel using implicit GEMM with split K dimension.
     
     Args:
         input (pointer): A pointer to the input tensor of shape (N, Ci)
@@ -126,7 +126,7 @@ def sparse_conv_bwd_weight_implicit_gemm_splitk_kernel(
     allow_tf32: tl.constexpr,  # Allow TF32 precision for matmuls
 ):
     """
-    Indice convolution backward to weight kernel using implicit GEMM with split K dimension.
+    Sparse convolution backward to weight kernel using implicit GEMM with split K dimension.
     
     Args:
         grad_output (pointer): A pointer to the gradient of the output tensor of shape (M, Co)

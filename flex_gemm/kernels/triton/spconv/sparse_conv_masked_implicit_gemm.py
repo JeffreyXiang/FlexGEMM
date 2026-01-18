@@ -40,7 +40,7 @@ def sparse_conv_fwd_masked_implicit_gemm_kernel(
     TRANSPOSE_WEIGHT: tl.constexpr = False,  # Whether to transpose the weight matrix
 ):
     """
-    Indice convolution forward kernel using masked implicit GEMM.
+    Sparse convolution forward kernel using masked implicit GEMM.
     
     Args:
         input (pointer): A pointer to the input tensor of shape (N, Ci)
@@ -127,7 +127,7 @@ def sparse_conv_bwd_weight_masked_implicit_gemm_kernel(
     allow_tf32: tl.constexpr,  # Allow TF32 precision for matmuls
 ):
     """
-    Indice convolution backward to weight kernel using masked implicit GEMM.
+    Sparse convolution backward to weight kernel using masked implicit GEMM.
     
     Args:
         grad_output (pointer): A pointer to the gradient of the output tensor of shape (M, Co)

@@ -3,7 +3,7 @@ import math
 import torch
 import triton
 import triton.language as tl
-from ..utils import get_num_sm
+from ...utils import get_num_sm
 from ....utils.autotuner import triton_autotune, autotune
 from . import config
 from .sparse_submanifold_conv_bwd_masked_implicit_gemm import (

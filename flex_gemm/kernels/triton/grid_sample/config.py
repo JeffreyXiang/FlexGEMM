@@ -1,5 +1,5 @@
 import triton
-from ..utils import get_autotune_config
+from ...utils import get_autotune_config
 
 
 autotune_config = get_autotune_config(

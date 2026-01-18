@@ -1,4 +1,3 @@
-import builtins
 from typing import *
 import os
 import json
@@ -9,119 +8,36 @@ import triton
 import time
 import inspect
 from filelock import FileLock
-from .. import (
+from ... import (
     AUTOSAVE_AUTOTUNE_CACHE,
     AUTOTUNE_CACHE_PATH,
 )
 
 
-class TritonPersistentCacheAutotuner(triton.runtime.Autotuner):
-    def __init__(
-        self,
-        fn,
-        arg_names,
-        configs,
-        key,
-        reset_to_zero,
-        restore_value,
-        pre_hook=None,
-        post_hook=None,
-        prune_configs_by: Dict = None,
-        warmup=None,
-        rep=None,
-        use_cuda_graph=False,
-        do_bench=None,
-    ):
-        super().__init__(
-            fn,
-            arg_names,
-            configs,
-            key,
-            reset_to_zero,
-            restore_value,
-            pre_hook,
-            post_hook,
-            prune_configs_by,
-            warmup,
-            rep,
-            use_cuda_graph,
-            do_bench,
-        )
+class PersistentCacheAutoTunerBase:
+    def get_cache(self):
+        raise NotImplementedError()
+    
+    def set_cache(self, cache):
+        raise NotImplementedError()
 
-    def run(self, *args, **kwargs):
-        self.nargs = dict(zip(self.arg_names, args))
-        used_cached_result = True
-        if len(self.configs) > 1:
-            all_args = {**self.nargs, **kwargs}
-            _args = {k: v for (k, v) in all_args.items() if k in self.arg_names}
-            key = [_args[key] for key in self.keys if key in _args]
-            for _, arg in _args.items():
-                if hasattr(arg, "dtype"):
-                    key.append(str(arg.dtype))
-            key = str(tuple(key))
-            if key not in self.cache:
-                # prune configs
-                used_cached_result = False
-                pruned_configs = self.prune_configs(kwargs)
-                bench_start = time.time()
-                timings = {config: self._bench(*args, config=config, **kwargs) for config in pruned_configs}
-                bench_end = time.time()
-                self.bench_time = bench_end - bench_start
-                self.cache[key] = builtins.min(timings, key=timings.get)
-                full_nargs = {**self.nargs, **kwargs, **self.cache[key].all_kwargs()}
-                self.pre_hook(full_nargs, reset_only=True)
-                self.configs_timings = timings
-            config = self.cache[key]
-        else:
-            config = self.configs[0]
-        self.best_config = config
-        if os.getenv("TRITON_PRINT_AUTOTUNING", None) == "1" and not used_cached_result:
-            print(f"Triton autotuning for function {self.base_fn.__name__} finished after "
-                  f"{self.bench_time:.2f}s; best config selected: {self.best_config};")
-        if AUTOSAVE_AUTOTUNE_CACHE and not used_cached_result:
-            save_autotune_cache()
-        if config.pre_hook is not None:
-            full_nargs = {**self.nargs, **kwargs, **config.all_kwargs()}
-            config.pre_hook(full_nargs)
-        ret = self.fn.run(
-            *args,
-            **kwargs,
-            **config.all_kwargs(),
-        )
-        self.nargs = None
-        return ret
 
-    def prune_configs(self, kwargs):
-        pruned_configs = self.configs
-        if self.early_config_prune:
-            pruned_configs = self.early_config_prune(self.configs, self.nargs, **kwargs)
-        if self.perf_model:
-            top_k = self.configs_top_k
-            if isinstance(top_k, float) and top_k <= 1.0:
-                top_k = int(len(self.configs) * top_k)
-            if len(pruned_configs) > top_k:
-                est_timing = {
-                    config: self.perf_model(
-                        **self.nargs,
-                        **kwargs,
-                        **config.all_kwargs(),
-                    )
-                    for config in pruned_configs
-                }
-                pruned_configs = sorted(est_timing.keys(), key=lambda x: est_timing[x])[:top_k]
-        return pruned_configs
+class TritonPersistentCacheAutotuner(PersistentCacheAutoTunerBase):
+    def __init__(self, *args, **kwargs):
+        try:
+            from .triton_autotuner import TritonPersistentCacheAutotunerImpl
+        except ImportError:
+            raise ImportError("Triton is not installed. Please install it by running `pip install triton`")
+        self._impl = TritonPersistentCacheAutotunerImpl(*args, **kwargs)
+        
+    def get_cache(self):
+        return self._impl.get_cache()
+    
+    def set_cache(self, cache):
+        return self._impl.set_cache(cache)
 
-    def warmup(self, *args, **kwargs):
-        self.nargs = dict(zip(self.arg_names, args))
-        ret = []
-        for config in self.prune_configs(kwargs):
-            ret.append(self.fn.warmup(
-                *args,
-                **kwargs,
-                **config.all_kwargs(),
-            ))
-        self.nargs = None
-        return ret
+    def __getitem__(self, grid):
+        return self._impl[grid]
 
 
 def triton_autotune(configs, key, prune_configs_by=None, reset_to_zero=None, restore_value=None, pre_hook=None, post_hook=None,
@@ -185,13 +101,80 @@ def triton_autotune(configs, key, prune_configs_by=None, reset_to_zero=None, res
         return TritonPersistentCacheAutotuner(
             fn, fn.arg_names, configs, key, reset_to_zero, restore_value, pre_hook=pre_hook,
             post_hook=post_hook, prune_configs_by=prune_configs_by, warmup=warmup, rep=rep,
-            use_cuda_graph=use_cuda_graph
+            use_cuda_graph=use_cuda_graph, do_bench=do_bench
         )
 
     return decorator
 
 
-class PersistentCacheAutoTuner:
+class TileLangPersistentCacheAutotuner(PersistentCacheAutoTunerBase):
+    def __init__(self, *args, **kwargs):
+        try:
+            from .tilelang_autotuner import TileLangPersistentCacheAutotunerImpl
+        except ImportError:
+            raise ImportError("TileLang is not installed. Please install it by running `pip install tilelang`")
+        self._impl = TileLangPersistentCacheAutotunerImpl(*args, **kwargs)
+        
+    def get_cache(self):
+        return self._impl.get_cache()
+    
+    def set_cache(self, cache):
+        return self._impl.set_cache(cache)
+
+    def __call__(self, *args, **kwargs):
+        return self._impl(*args, **kwargs)
+    
+    
+def tilelang_autotune(
+    func = None,
+    *, 
+    configs: dict,
+    key_fn: Callable,
+    # profile arguments
+    warmup: int = 25,
+    rep: int = 100,
+    timeout: int = 100,
+):
+    """
+    Just-In-Time (JIT) compiler decorator for TileLang functions.
+
+    Parameters
+    ----------
+    func_or_out_idx : Any, optional
+        If using `@tilelang.jit(...)` to configure, this is the `out_idx` parameter.
+        If using `@tilelang.jit` directly on a function, this argument is implicitly
+        the function to be decorated (and `out_idx` will be `None`).
+    configs : Dict
+        Configuration space to explore during auto-tuning.
+    key_fn : Callable
+        A function that takes in the input arguments and returns the key used to cache the tuning results.
+        Once the key changes, the autotuning will be rerun.
+    warmup : int, optional
+        Number of warmup iterations before timing.
+    rep : int, optional
+        Number of repetitions for timing measurements.
+    timeout : int, optional
+    
+    Returns
+    -------
+    Callable
+        Either a JIT-compiled wrapper around the input function, or a configured decorator
+        instance that can then be applied to a function.
+    """
+    def decorator(impl):
+        return TileLangPersistentCacheAutotuner(
+            jit_impl=impl,
+            configs=configs,
+            key_fn=key_fn,
+            warmup=warmup,
+            rep=rep,
+            timeout=timeout,
+        )
+
+    return decorator
+
+
+class PersistentCacheAutoTuner(PersistentCacheAutoTunerBase):
     def __init__(
         self,
         kernel,
@@ -229,6 +212,12 @@ class PersistentCacheAutoTuner:
         self.verbose = verbose or os.getenv('FLEX_GEMM_AUTOTUNER_VERBOSE', '0') == '1'
         self.kernel_arg_names = inspect.getfullargspec(kernel).args
         self.cache = {}
+        
+    def get_cache(self):
+        return self.cache
+    
+    def set_cache(self, cache):
+        self.cache = cache
         
     def _args_to_kwargs(self, args, kwargs):
         # Convert args to kwargs
@@ -333,11 +322,9 @@ def get_autotune_cache():
     def save_cache(full_module_name):
         module = importlib.import_module(full_module_name)
         for attr_name, attr in module.__dict__.items():
-            cache_key = f"{full_module_name}.{attr_name}"
-            if isinstance(attr, PersistentCacheAutoTuner):
-                cache[device_name][cache_key] = attr.cache
-            elif isinstance(attr, TritonPersistentCacheAutotuner):
-                cache[device_name][cache_key] = {k: v.__dict__ for k, v in attr.cache.items()}
+            if isinstance(attr, PersistentCacheAutoTunerBase):
+                cache_key = f"{full_module_name}.{attr_name}"
+                cache[device_name][cache_key] = attr.get_cache()
 
     walk_package('flex_gemm', save_cache)
 
@@ -396,14 +383,9 @@ def load_autotune_cache(path_or_cache=None):
     def load_cache(full_module_name):
         module = importlib.import_module(full_module_name)
         for attr_name, attr in module.__dict__.items():
-            cache_key = f"{full_module_name}.{attr_name}"
-            if isinstance(attr, PersistentCacheAutoTuner):
+            if isinstance(attr, PersistentCacheAutoTunerBase):
+                cache_key = f"{full_module_name}.{attr_name}"
                 if cache_key in cache[device_name]:
-                    attr.cache = cache[device_name][cache_key]
-            elif isinstance(attr, TritonPersistentCacheAutotuner):
-                if cache_key in cache[device_name]:
-                    for k, v in cache[device_name][cache_key].items():
-                        attr.cache[k] = triton.runtime.Config(None)
-                        attr.cache[k].__dict__.update(v)
-
+                    attr.set_cache(cache[device_name][cache_key])
+    
     walk_package('flex_gemm', load_cache)

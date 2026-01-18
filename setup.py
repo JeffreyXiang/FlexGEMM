@@ -43,6 +43,7 @@ setup(
     packages=[
         "flex_gemm",
         "flex_gemm.utils",
+        "flex_gemm.utils.autotuner",
         "flex_gemm.ops",
         "flex_gemm.ops.spconv",
         "flex_gemm.ops.grid_sample",
@@ -50,6 +51,9 @@ setup(
         "flex_gemm.kernels.triton",
         "flex_gemm.kernels.triton.spconv",
         "flex_gemm.kernels.triton.grid_sample",
+        "flex_gemm.kernels.tilelang",
+        "flex_gemm.kernels.tilelang.spconv",
+        # "flex_gemm.kernels.triton.grid_sample",
     ],
     ext_modules=[
         CUDAExtension(

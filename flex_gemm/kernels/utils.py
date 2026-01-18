@@ -1,6 +1,5 @@
 from typing import *
 import torch
-import triton
 
 
 def get_gpu_name():
@@ -20,10 +19,10 @@ def get_num_sm():
     
 
 def get_autotune_config(
-    default: List[triton.Config] = None,
-    platform: Dict[str, List[triton.Config]] = None,
-    device: Dict[str, List[triton.Config]] = None,
-) -> List[triton.Config]:
+    default: List[Any] = None,
+    platform: Dict[str, List[Any]] = None,
+    device: Dict[str, List[Any]] = None,
+) -> List[Any]:
     """
     Get the autotune configuration for the current platform and device.
     """
