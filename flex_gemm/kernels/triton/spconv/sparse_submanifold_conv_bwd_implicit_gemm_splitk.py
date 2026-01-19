@@ -14,7 +14,7 @@ from .sparse_submanifold_conv_bwd_implicit_gemm import (
 
 @triton_autotune(
     configs=autotune_config,
-    key=['LOGN', 'Ci', 'Co', 'V', 'SPLITK'],
+    key=['LOGN', 'Ci', 'Co', 'V', 'SPLITK', 'allow_tf32'],
 )
 @triton.jit
 def sparse_submanifold_conv_bwd_input_implicit_gemm_splitk_kernel(
@@ -30,6 +30,7 @@ def sparse_submanifold_conv_bwd_input_implicit_gemm_splitk_kernel(
     B2: tl.constexpr,   # Block size for Ci dimension
     BK: tl.constexpr,   # Block size for K dimension (V * Co)
     SPLITK: tl.constexpr,  # Split K dimension
+    allow_tf32: tl.constexpr
 ):
     """
     Sparse submanifold convolution backward to input kernel using implicit GEMM.
@@ -71,7 +72,7 @@ def sparse_submanifold_conv_bwd_input_implicit_gemm_splitk_kernel(
         grad_output_block = tl.load(grad_output_ptr, mask=mask[:, None] & (offset_k[None, :] < Co - bk * BK), other=0.0)
         weight_block = tl.load(weight_ptr, mask=offset_k[:, None] < Co - bk * BK, other=0.0)
         # Accumulate along the K dimension.
-        accumulator = tl.dot(grad_output_block, weight_block, accumulator)  # (B1, B2)
+        accumulator = tl.dot(grad_output_block, weight_block, accumulator, input_precision='tf32' if allow_tf32 else 'ieee')  # (B1, B2)
                 
     # Write back the block of the output matrix with masks.
     grad_input_offset_n = block_id_n * B1 + tl.arange(0, B1)
@@ -89,7 +90,7 @@ heuristics = {
     
 @triton_autotune(
     configs=autotune_config,
-    key=['LOGN', 'Ci', 'Co', 'V', 'SPLITK'],
+    key=['LOGN', 'Ci', 'Co', 'V', 'SPLITK', 'allow_tf32'],
 )
 @triton.heuristics(heuristics)
 @triton.jit
@@ -108,6 +109,7 @@ def sparse_submanifold_conv_bwd_weight_implicit_gemm_splitk_kernel(
     BV: tl.constexpr,   # Block size for V dimension
     BCi: tl.constexpr,  # Block size for Ci dimension
     SPLITK: tl.constexpr,  # Split K dimension
+    allow_tf32: tl.constexpr
 ):
     """
     Sparse submanifold convolution backward to weight kernel using implicit GEMM.
@@ -146,7 +148,7 @@ def sparse_submanifold_conv_bwd_weight_implicit_gemm_splitk_kernel(
         grad_output_block = tl.load(grad_output_ptr, mask=mask[None, :], other=0.0)
         input_block = tl.load(input_ptr, mask=input_offset_n[:, :, None] != invalid_neigh, other=0.0).reshape(BK, BV * BCi)
         # Accumulate along the K dimension.
-        accumulator = tl.dot(grad_output_block, input_block, accumulator)           # (B1, BV * BCi)
+        accumulator = tl.dot(grad_output_block, input_block, accumulator, input_precision='tf32' if allow_tf32 else 'ieee')           # (B1, BV * BCi)
         # Advance pointers.
         grad_output_ptr += BK * Co
         neighbor_ptr += BK * V
@@ -159,7 +161,7 @@ def sparse_submanifold_conv_bwd_weight_implicit_gemm_splitk_kernel(
     tl.store(grad_weight_ptr, accumulator, mask=grad_weight_mask)
     
 
-def sparse_submanifold_conv_bwd_input_implicit_gemm_splitk_configs(grad_output, weight, neighbor):
+def sparse_submanifold_conv_bwd_input_implicit_gemm_splitk_configs(grad_output, weight, neighbor, invalid_neigh, allow_tf32):
     N, Ci = neighbor.shape[0], weight.shape[-1]
     MAX_NB1 = (N + 128 - 1) // 128
     MAX_NB2 = (Ci + 128 - 1) // 128
@@ -174,7 +176,7 @@ def sparse_submanifold_conv_bwd_input_implicit_gemm_splitk_configs(grad_output, 
     return configs
 
 
-def sparse_submanifold_conv_bwd_input_implicit_gemm_splitk_keys(grad_output, weight, neighbor):
+def sparse_submanifold_conv_bwd_input_implicit_gemm_splitk_keys(grad_output, weight, neighbor, invalid_neigh, allow_tf32):
     N, Ci, Co, V = neighbor.shape[0], weight.shape[-1], weight.shape[0], weight.shape[1]
     return f'(2^{int(math.log2(N))}, {Ci}, {Co}, {V})'
 
@@ -188,7 +190,8 @@ def sparse_submanifold_conv_bwd_input_implicit_gemm_splitk(
     weight: torch.Tensor,
     neighbor: torch.Tensor,
     SPLITK: int = 1,
-    invalid_neigh: int = 0xffffffff
+    invalid_neigh: int = 0xffffffff,
+    allow_tf32: bool = True
 ) -> torch.Tensor:
     N, Ci, Co, V = neighbor.shape[0], weight.shape[-1], weight.shape[0], weight.shape[1]
     LOGN = int(math.log2(N))
@@ -203,6 +206,7 @@ def sparse_submanifold_conv_bwd_input_implicit_gemm_splitk(
             grad_input,
             invalid_neigh,
             N, LOGN, Ci, Co, V,
+            allow_tf32=allow_tf32
         )
         return grad_input
     else:
@@ -216,11 +220,12 @@ def sparse_submanifold_conv_bwd_input_implicit_gemm_splitk(
             invalid_neigh,
             N, LOGN, Ci, Co, V,
             SPLITK=SPLITK,
+            allow_tf32=allow_tf32
         )
         return grad_input.sum(0).to(weight.dtype)
     
     
-def sparse_submanifold_conv_bwd_weight_implicit_gemm_splitk_configs(grad_output, input, neighbor, invaild_neigh):
+def sparse_submanifold_conv_bwd_weight_implicit_gemm_splitk_configs(grad_output, input, neighbor, invalid_neigh, allow_tf32):
     Co, V, Ci = grad_output.shape[1], neighbor.shape[1], input.shape[1]
     MAX_NB1 = (Co + 128 - 1) // 128
     MAX_NB2 = (V * Ci + 128 - 1) // 128
@@ -235,7 +240,7 @@ def sparse_submanifold_conv_bwd_weight_implicit_gemm_splitk_configs(grad_output,
     return configs
 
 
-def sparse_submanifold_conv_bwd_weight_implicit_gemm_splitk_keys(grad_output, input, neighbor, invalid_neigh):
+def sparse_submanifold_conv_bwd_weight_implicit_gemm_splitk_keys(grad_output, input, neighbor, invalid_neigh, allow_tf32):
     N, Ci, Co, V = neighbor.shape[0], input.shape[1], grad_output.shape[1], neighbor.shape[1]
     return f'(2^{int(math.log2(N))}, {Ci}, {Co}, {V})'
 
@@ -250,6 +255,7 @@ def sparse_submanifold_conv_bwd_weight_implicit_gemm_splitk(
     neighbor: torch.Tensor,
     invalid_neigh: int = 0xffffffff,
     SPLITK: int = 1,
+    allow_tf32: bool = True
 ) -> torch.Tensor:
     N, Ci, Co, V = neighbor.shape[0], input.shape[1], grad_output.shape[1], neighbor.shape[1]
     LOGN = int(math.log2(N))
@@ -264,6 +270,7 @@ def sparse_submanifold_conv_bwd_weight_implicit_gemm_splitk(
             grad_weight,
             invalid_neigh,
             N, LOGN, Ci, Co, V,
+            allow_tf32=allow_tf32
         )
         return grad_weight
     else:
@@ -277,6 +284,7 @@ def sparse_submanifold_conv_bwd_weight_implicit_gemm_splitk(
             invalid_neigh,
             N, LOGN, Ci, Co, V,
             SPLITK=SPLITK,
+            allow_tf32=allow_tf32
         )
         return grad_weight.sum(0).to(grad_output.dtype)
 
@@ -287,7 +295,8 @@ def sparse_submanifold_conv_bwd_implicit_gemm_splitk(
     weight: torch.Tensor,
     bias: torch.Tensor,
     neighbor: torch.Tensor,
-    invalid_neigh: int = 0xffffffff
+    invalid_neigh: int = 0xffffffff,
+    allow_tf32: bool = True
 ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
     assert grad_output.is_contiguous(), "Matrix grad_output must be contiguous"
     assert input.shape[1] == weight.shape[2], "Incompatible dimensions"
@@ -305,7 +314,8 @@ def sparse_submanifold_conv_bwd_implicit_gemm_splitk(
             grad_output,
             weight,
             neighbor,
-            invalid_neigh=invalid_neigh
+            invalid_neigh=invalid_neigh,
+            allow_tf32=allow_tf32
         )
         
     # Grad for weight
@@ -314,7 +324,8 @@ def sparse_submanifold_conv_bwd_implicit_gemm_splitk(
             grad_output,
             input,
             neighbor,
-            invalid_neigh=invalid_neigh
+            invalid_neigh=invalid_neigh,
+            allow_tf32=allow_tf32
         )
         
     # Grad for bias

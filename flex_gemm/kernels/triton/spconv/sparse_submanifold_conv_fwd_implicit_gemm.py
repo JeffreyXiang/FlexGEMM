@@ -9,7 +9,7 @@ from .config import autotune_config
 
 @triton_autotune(
     configs=autotune_config,
-    key=['LOGN', 'Ci', 'Co', 'V'],
+    key=['LOGN', 'Ci', 'Co', 'V', 'allow_tf32'],
 )
 @triton.jit
 def sparse_submanifold_conv_fwd_implicit_gemm_kernel(
@@ -25,6 +25,7 @@ def sparse_submanifold_conv_fwd_implicit_gemm_kernel(
     B1: tl.constexpr,   # Block size for N dimension
     B2: tl.constexpr,   # Block size for Co dimension
     BK: tl.constexpr,   # Block size for K dimension (V * Ci)
+    allow_tf32: tl.constexpr
 ):
     """
     Sparse submanifold convolution forward kernel using implicit GEMM.
@@ -65,7 +66,7 @@ def sparse_submanifold_conv_fwd_implicit_gemm_kernel(
         input_block = tl.load(input_ptr, mask=mask[:, None] & (offset_k[None, :] < Ci - bk * BK), other=0.0)
         weight_block = tl.load(weight_ptr, mask=offset_k[:, None] < Ci - bk * BK, other=0.0)
         # Accumulate along the K dimension.
-        accumulator = tl.dot(input_block, weight_block, accumulator)  # (B1, B2)
+        accumulator = tl.dot(input_block, weight_block, accumulator, input_precision='tf32' if allow_tf32 else 'ieee')  # (B1, B2)
         # Advance the pointers to the next Ci block.
         weight_ptr += min(BK, Ci - bk * BK)
     c = accumulator.to(input.type.element_ty)
@@ -89,6 +90,7 @@ def sparse_submanifold_conv_fwd_implicit_gemm(
     bias: torch.Tensor,
     neighbor: torch.Tensor,
     invalid_neigh: int = 0xffffffff,
+    allow_tf32: bool = True,
 ) -> torch.Tensor:
     assert input.shape[1] == weight.shape[2], "Incompatible dimensions"
     assert input.is_contiguous(), "Matrix input must be contiguous"
@@ -103,5 +105,6 @@ def sparse_submanifold_conv_fwd_implicit_gemm(
     sparse_submanifold_conv_fwd_implicit_gemm_kernel[grid](
         input, weight, bias, neighbor, output, invalid_neigh,
         N, LOGN, Ci, Co, V,  #
+        allow_tf32=allow_tf32
     )
     return output
