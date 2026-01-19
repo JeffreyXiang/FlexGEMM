@@ -1,28 +1,40 @@
 # FlexGEMM
 
-**FlexGEMM** is a **Triton-powered GEMM backend** for **3D sparse convolutions**.
-It implements **Explicit**, **Implicit**, **Masked Implicit** algorithm variants, with optional **Split-K** parallelism for sparse GEMM, delivering **state-of-the-art performance** for Submanifold Convolution and voxel-based neural networks.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Triton](https://img.shields.io/badge/Triton-%E2%89%A53.2.0-blue)](https://github.com/openai/triton)
+[![PyTorch](https://img.shields.io/badge/PyTorch-%E2%89%A52.4.0-red)](https://pytorch.org/)
 
-## Why FlexGEMM?
+**FlexGEMM** is a high-performance, **Triton-powered GEMM backend** designed for **3D sparse convolutions**. 
 
-* **Triton-first**: Built on [Triton](https://github.com/openai/triton) for high performance and cross-platform GPU kernels.
-* **Sparse-ready**: Optimized for 3D sparse tensors with highly irregular sparsity.
-* **Fast**: Consistently outperforms existing sparse convolution libraries.
+It implements **Explicit**, **Implicit**, and **Masked Implicit** algorithm variants, featuring optional **Split-K** parallelism for sparse GEMM. FlexGEMM delivers **state-of-the-art performance** for Submanifold Convolution and voxel-based neural networks, consistently outperforming existing solutions.
 
-## Installation
+### Resources
+- **Deep Dive**: Read the technical blog at [JeffreyXiang's Blog](https://jeffreyxiang.github.io/en/blogs/flexgemm).
+- **Real-world Demo**: See FlexGEMM in action in the [TRELLIS.2](https://github.com/microsoft/TRELLIS.2) project.
 
+
+## ✨ Why FlexGEMM?
+
+- **Triton-First Architecture**: Built entirely on [Triton](https://github.com/triton-lang/triton), ensuring high-performance kernel execution and cross-platform compatibility.
+- **Sparse-Optimized**: Specifically tailored for 3D sparse tensors, efficiently handling highly irregular sparsity patterns.
+- **Blazing Fast**: Consistently outperforms standard sparse convolution libraries (such as `spconv`, `torchsparse`) in training throughput.
+
+## 🛠️ Installation
+
+### Prerequisites
+* **PyTorch** ≥ 2.4.0
+* **Triton** ≥ 3.2.0
+
+### Install via pip
 ```bash
 git clone https://github.com/JeffreyXiang/FlexGEMM.git
 cd FlexGEMM
-pip install .
+pip install . --no-build-isolation
 ```
 
-Requires:
+## 💻 Usage Example
 
-* PyTorch ≥ 2.5.0
-* Triton ≥ 3.2.0
-
-## Example
+Here is a minimal example demonstrating how to perform a sparse submanifold convolution using FlexGEMM:
 
 ```python
 import torch
@@ -30,76 +42,75 @@ import flex_gemm
 from flex_gemm.ops.spconv import sparse_submanifold_conv3d
 from tests.spconv_fwd import sphere_coords
 
-# Sparse voxel shell
+# 1. Prepare Sparse Voxel Data
+# Generate a sparse voxel shell
 feats, coords, shape = sphere_coords(256, 256, dtype=torch.float16, device='cuda')
 
-# Weight and bias
+# 2. Define Weights and Bias
 Ci, Co = 256, 256
 Ks = 3
 weight = torch.randn(Co, Ks, Ks, Ks, Ci, dtype=torch.float16, device='cuda', requires_grad=True)
 bias = torch.randn(Co, dtype=torch.float16, device='cuda', requires_grad=True)
 
-# Set algorithm: Masked + Split-K
+# 3. Configure Algorithm
+# Example: Using Masked Implicit GEMM with Split-K optimization
 flex_gemm.ops.spconv.set_algorithm(
     flex_gemm.ops.spconv.Algorithm.MASKED_IMPLICIT_GEMM_SPLITK
 )
 
-neignbor_cache = None
-out_feats, neignbor_cache = sparse_submanifold_conv3d(
-    feats, coords, shape, neignbor_cache,
+# 4. Forward Pass
+out_feats, neighbor_cache = sparse_submanifold_conv3d(
+    feats, coords, shape,
     weight, bias,
 )
 
+# 5. Backward Pass
 out_feats.sum().backward()
 ```
 
-## Performance 
+## 📊 Performance
 
-Environment:
+FlexGEMM demonstrates significant speed improvements over existing baselines.
 
-* NVIDIA A100 (80 SMs)
-* PyTorch 2.6.0
-* CUDA 12.4
-* Triton 3.2.0
-* Float16 (FP16) precision
+**Test Environment:**
+* **GPU**: NVIDIA A100 80GB PCIe
+* **Software**: PyTorch 2.4.1, CUDA 12.0, Triton 3.2.0
 
-### Sparse Conv3D Forward
+### Benchmark Results
 
-| RES  | C    | spconv | torchsparse | FlexGEMM   | Speed Up |
-| :--: | :--: | :----: | :---------: | :--------: | :------: |
-| 8    | 1024 | 0.30ms | 0.95ms      | **0.19ms** |  1.58×   |
-| 16   | 1024 | 0.47ms | 0.91ms      | **0.28ms** |  1.68×   |
-| 32   | 1024 | 1.38ms | 2.46ms      | **1.03ms** |  1.35×   |
-| 64   | 1024 | 5.73ms | 6.99ms      | **3.71ms** |  1.54x   |
-| 128  | 512  | 3.62ms | 7.29ms      | **2.96ms** |  1.22x   |
-| 256  | 256  | 3.60ms | 7.38ms      | **2.62ms** |  1.37x   |
-| 512  | 128  | 4.37ms | 8.27ms      | **3.02ms** |  1.45x   |
-| 1024 | 64   | 7.84ms | 9.82ms      | **4.99ms** |  1.57x   |
+> **Note**: FlexGEMM achieves **~2× acceleration** compared to previous state-of-the-art methods under efficient data formats like FP16 and TF32.
 
-### Sparse Conv3D Backward
+#### 1. FP16 Precision (Training Speed)
+![](assets/benchmark_train_fp16.png)
 
-| RES  | C    | spconv | torchsparse | FlexGEMM   | Speed Up |
-| :--: | :--: | :----: | :---------: | :--------: | :------: |
-| 8    | 1024 | 0.49ms | 7.70ms      | **0.36ms** | 1.36x    |
-| 16   | 1024 | 0.88ms | 7.98ms      | **0.45ms** | 1.96x    |
-| 32   | 1024 | 2.71ms | 9.67ms      | **1.61ms** | 1.68x    |
-| 64   | 1024 | 10.14ms| 17.49ms     | **5.82ms** | 1.74x    |
-| 128  | 512  | 8.67ms | 14.26ms     | **5.51ms** | 1.57x    |
-| 256  | 256  | 8.96ms | 14.38ms     | **5.34ms** | 1.68x    |
-| 512  | 128  | 10.63ms| 21.55ms     | **6.30ms** | 1.69x    |
-| 1024 | 64   | 18.89ms| 31.66ms     | **12.15ms**| 1.55x    |
+#### 2. TF32 Precision (Training Speed)
+![](assets/benchmark_train_tf32.png)
 
+#### 3. FP32 Precision (Training Speed)
+![](assets/benchmark_train_fp32.png)
 
-### Summary
+### Performance Summary
 
-* **FlexGEMM consistently outperforms `spconv` and `torchsparse`** across both forward and backward sparse convolution benchmarks.
-* **Significant speedups** are observed across both low- and high-resolution sparse tensors, achieving up to **\~2× acceleration** and an average **\~1.6× speedup** compared to `spconv` and `torchsparse`.
-* **Memory-efficient**: Achieves higher throughput without increasing GPU memory usage.
-* **Robust across channel and resolution scales**: Performs well for both wide (C=1024) and narrow (C=64) feature maps, as well as small (RES=8) and large (RES=1024) voxel grids.
-* **Ideal for large-scale 3D networks**: Particularly suitable for high-resolution voxelized point clouds, submanifold convolutions, and octree-based architectures.
+*   **SOTA Speed**: Consistently outperforms `spconv`, `torchsparse`, and `fvdb`.
+*   **Scalability**: Robust performance across various channel widths (C=64 to C=1024) and resolutions (RES=8 to RES=1024).
+*   **Memory Efficient**: Delivers higher throughput without increasing GPU memory overhead.
+*   **Application Ready**: Ideal for high-resolution voxelized point clouds, submanifold convolutions, and large-scale 3D networks.
 
+## 🤝 Contributing
 
-## License
+We welcome contributions to make FlexGEMM faster and more robust!
 
-MIT.
+### How to help
+*   **Report Bugs**: Open an issue describing the bug and how to reproduce it.
+*   **Suggest Features**: Have an idea for a new algorithm or optimization? Let us know!
+*   **Submit Pull Requests**:
+    1.  Fork the repository and create your branch from `main`.
+    2.  Ensure your code follows the project's style.
+    3.  Run the tests in the `tests/` directory to ensure no regressions.
+    4.  Open a Pull Request with a detailed description.
 
+We appreciate all contributors who help improve this project!
+
+## 📜 License
+
+This project is released under the [MIT License](LICENSE).

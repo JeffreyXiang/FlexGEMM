@@ -5,7 +5,7 @@ import triton
 import triton.language as tl
 from ..utils import get_num_sm
 from ....utils.autotuner import triton_autotune, autotune
-from .config import autotune_config
+from . import config
 from .sparse_submanifold_conv_fwd_masked_implicit_gemm import sparse_submanifold_conv_fwd_masked_implicit_gemm_kernel
 
 
@@ -16,8 +16,8 @@ heuristics = {
 
 
 @triton_autotune(
-    configs=autotune_config,
-    key=['LOGN', 'Ci', 'Co', 'V', 'SPLITK'],
+    configs=config.autotune_config,
+    key=['LOGN', 'Ci', 'Co', 'V', 'SPLITK', 'allow_tf32'],
 )
 @triton.heuristics(heuristics)
 @triton.jit
@@ -35,6 +35,7 @@ def sparse_submanifold_conv_fwd_masked_implicit_gemm_splitk_kernel(
     B2: tl.constexpr,   # Block size for Co dimension
     BK: tl.constexpr,   # Block size for K dimension (V * Ci)
     SPLITK: tl.constexpr,  # Split K dimension into multiple sub-dimensions
+    allow_tf32: tl.constexpr,  # Allow TF32 precision for matmuls
     # Huristic parameters
     valid_kernel,
     valid_kernel_seg,
@@ -65,9 +66,10 @@ def sparse_submanifold_conv_fwd_masked_implicit_gemm_splitk_kernel(
     k_start = tl.cdiv(num_k * valid_kernel_seglen * block_id_k, SPLITK)
     k_end = tl.cdiv(num_k * valid_kernel_seglen * (block_id_k + 1), SPLITK)
     offset_n = block_id_n * B1 + tl.arange(0, B1)
-    offset_sorted_n = tl.load(sorted_idx + offset_n, mask=offset_n < N, other=0)  # (B1,)
-    offset_co = (block_id_co * B2 + tl.arange(0, B2)) % Co      # (B2,)
-    offset_k = tl.arange(0, BK)                                 # (BK,)
+    n_mask = offset_n < N
+    offset_sorted_n = tl.load(sorted_idx + offset_n, mask=n_mask, other=0)  # (B1,)
+    offset_co = (block_id_co * B2 + tl.arange(0, B2)) % Co                  # (B2,)
+    offset_k = tl.arange(0, BK)                                             # (BK,)
     
     # Create a block of the output matrix C.
     accumulator = tl.zeros((B1, B2), dtype=tl.float32)
@@ -78,15 +80,18 @@ def sparse_submanifold_conv_fwd_masked_implicit_gemm_splitk_kernel(
         bk = k % num_k
         v = tl.load(valid_kernel + valid_kernel_start + v)
         # Calculate pointers to input matrix.
-        neighbor_offset_n = tl.load(neighbor + offset_sorted_n * V + v)  # (B1,)
-        mask = neighbor_offset_n != 0xffffffff
-        input_ptr = input + bk * BK + (neighbor_offset_n[:, None] * Ci + offset_k[None, :])  # (B1, BK)
-        weight_ptr = weight + v * Ci + bk * BK + (offset_co[None, :] * V * Ci + offset_k[:, None])     # (BK, B2)
+        neighbor_offset_n = tl.load(neighbor + offset_sorted_n * V + v)                             # (B1,)
+        input_ptr = input + bk * BK + (neighbor_offset_n[:, None].to(tl.int64) * Ci + offset_k[None, :])         # (B1, BK)
+        # Calculate pointers to weight matrix.
+        weight_ptr = weight + v * Ci + bk * BK + (offset_co[None, :] * V * Ci + offset_k[:, None])  # (BK, B2)
         # Load the next block of input and weight.
-        input_block = tl.load(input_ptr, mask=mask[:, None] & (offset_k[None, :] < Ci - bk * BK), other=0.0)
-        weight_block = tl.load(weight_ptr, mask=offset_k[:, None] < Ci - bk * BK, other=0.0)
+        neigh_mask = neighbor_offset_n != 0xffffffff
+        k_mask = offset_k < Ci - bk * BK
+        input_block = tl.load(input_ptr, mask=neigh_mask[:, None] & k_mask[None, :], other=0.0)
+        weight_block = tl.load(weight_ptr, mask=k_mask[:, None], other=0.0)
         # Accumulate along the K dimension.
-        accumulator = tl.dot(input_block, weight_block, accumulator)  # (B1, B2)
+        accumulator = tl.dot(input_block, weight_block, accumulator,
+                             input_precision='tf32' if allow_tf32 else 'ieee')                      # (B1, B2)
             
     # add bias
     if bias is not None and block_id_k == 0:
@@ -97,7 +102,7 @@ def sparse_submanifold_conv_fwd_masked_implicit_gemm_splitk_kernel(
     out_offset_n = offset_sorted_n
     out_offset_co = block_id_co * B2 + tl.arange(0, B2)
     out_ptr = output + block_id_k * N * Co + (out_offset_n[:, None] * Co + out_offset_co[None, :])
-    out_mask = (offset_n[:, None] < N) & (out_offset_co[None, :] < Co)
+    out_mask = n_mask[:, None] & (out_offset_co[None, :] < Co)
     tl.store(out_ptr, accumulator, mask=out_mask)
 
 
@@ -150,6 +155,7 @@ def sparse_submanifold_conv_fwd_masked_implicit_gemm_splitk(
             N, LOGN, Ci, Co, V,  #
             valid_kernel=valid_kernel,
             valid_kernel_seg=valid_kernel_seg,
+            allow_tf32=config.allow_tf32,
         )
         return output
     else:
@@ -161,5 +167,6 @@ def sparse_submanifold_conv_fwd_masked_implicit_gemm_splitk(
             valid_kernel=valid_kernel,
             valid_kernel_seg=valid_kernel_seg,
             SPLITK=SPLITK,
+            allow_tf32=config.allow_tf32,
         )
         return output.sum(dim=0).to(input.dtype)

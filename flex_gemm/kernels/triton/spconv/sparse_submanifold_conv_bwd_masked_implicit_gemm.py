@@ -4,7 +4,7 @@ import torch
 import triton
 import triton.language as tl
 from ....utils.autotuner import triton_autotune
-from .config import autotune_config
+from . import config
 
 
 heuristics_bwd_input = {
@@ -14,8 +14,8 @@ heuristics_bwd_input = {
 
 
 @triton_autotune(
-    configs=autotune_config,
-    key=['LOGN', 'Ci', 'Co', 'V'],
+    configs=config.autotune_config,
+    key=['LOGN', 'Ci', 'Co', 'V', 'allow_tf32'],
 )
 @triton.heuristics(heuristics_bwd_input)
 @triton.jit
@@ -31,6 +31,7 @@ def sparse_submanifold_conv_bwd_input_masked_implicit_gemm_kernel(
     B1: tl.constexpr,   # Block size for N dimension
     B2: tl.constexpr,   # Block size for Ci dimension
     BK: tl.constexpr,   # Block size for K dimension (V * Co)
+    allow_tf32: tl.constexpr,  # Allow TF32 precision for matmuls
     # Huristic parameters
     valid_kernel,
     valid_kernel_seg,
@@ -57,7 +58,8 @@ def sparse_submanifold_conv_bwd_input_masked_implicit_gemm_kernel(
     valid_kernel_start = tl.load(valid_kernel_seg + block_id_n)
     valid_kernel_seglen = tl.load(valid_kernel_seg + block_id_n + 1) - valid_kernel_start
     offset_n = block_id_n * B1 + tl.arange(0, B1)
-    offset_sorted_n = tl.load(sorted_idx + offset_n, mask=offset_n < N, other=0)  # (B1,)
+    n_mask = offset_n < N
+    offset_sorted_n = tl.load(sorted_idx + offset_n, mask=n_mask, other=0)  # (B1,)
     offset_ci = (block_id_ci * B2 + tl.arange(0, B2)) % Ci      # (B2,)
     offset_k = tl.arange(0, BK)                                 # (BK,)
     
@@ -70,29 +72,31 @@ def sparse_submanifold_conv_bwd_input_masked_implicit_gemm_kernel(
         bk = k % num_k
         v = tl.load(valid_kernel + valid_kernel_start + v)
         # Calculate pointers to grad_output matrix.
-        neighbor_offset_n = tl.load(neighbor + offset_sorted_n * V + v)  # (B1,)
-        mask = neighbor_offset_n != 0xffffffff
-        grad_output_ptr = grad_output + bk * BK + (neighbor_offset_n[:, None] * Co + offset_k[None, :])  # (B1, BK)
+        neighbor_offset_n = tl.load(neighbor + offset_sorted_n * V + v)                                     # (B1,)
+        grad_output_ptr = grad_output + bk * BK + (neighbor_offset_n[:, None].to(tl.int64) * Co + offset_k[None, :])     # (B1, BK)
         # Calculate pointers to weight matrix.
-        weight_ptr = weight + (((offset_k[:, None] + bk * BK) * V + V - 1 - v) * Ci + offset_ci[None, :])        # (BK, B2)
+        weight_ptr = weight + (((offset_k[:, None] + bk * BK) * V + V - 1 - v) * Ci + offset_ci[None, :])   # (BK, B2)
         # Load the next block of input and weight.
-        grad_output_block = tl.load(grad_output_ptr, mask=mask[:, None] & (offset_k[None, :] < Co - bk * BK), other=0.0)
-        weight_block = tl.load(weight_ptr, mask=offset_k[:, None] < Co - bk * BK, other=0.0)
+        neigh_mask = neighbor_offset_n != 0xffffffff
+        k_mask = offset_k < Co - bk * BK
+        grad_output_block = tl.load(grad_output_ptr, mask=neigh_mask[:, None] & k_mask[None, :], other=0.0)
+        weight_block = tl.load(weight_ptr, mask=k_mask[:, None], other=0.0)
         # Accumulate along the K dimension.
-        accumulator = tl.dot(grad_output_block, weight_block, accumulator)  # (B1, B2)
+        accumulator = tl.dot(grad_output_block, weight_block, accumulator,
+                             input_precision='tf32' if allow_tf32 else 'ieee')                              # (B1, B2)
     c = accumulator.to(grad_output.type.element_ty)
                 
     # Write back the block of the output matrix with masks.
     grad_input_offset_n = offset_sorted_n
     grad_input_offset_ci = block_id_ci * B2 + tl.arange(0, B2)
     grad_input_ptr = grad_input + (grad_input_offset_n[:, None] * Ci + grad_input_offset_ci[None, :])
-    grad_input_mask = (offset_n[:, None] < N) & (grad_input_offset_ci[None, :] < Ci)
+    grad_input_mask = n_mask[:, None] & (grad_input_offset_ci[None, :] < Ci)
     tl.store(grad_input_ptr, c, mask=grad_input_mask)
 
     
 @triton_autotune(
-    configs=autotune_config,
-    key=['LOGN', 'Ci', 'Co', 'V'],
+    configs=config.autotune_config,
+    key=['LOGN', 'Ci', 'Co', 'V', 'allow_tf32'],
 )
 @triton.jit
 def sparse_submanifold_conv_bwd_weight_masked_implicit_gemm_kernel(
@@ -108,6 +112,7 @@ def sparse_submanifold_conv_bwd_weight_masked_implicit_gemm_kernel(
     B1: tl.constexpr,   # Block size for Co dimension
     B2: tl.constexpr,   # Block size for Ci dimension
     BK: tl.constexpr,   # Block size for K dimension (N)
+    allow_tf32: tl.constexpr,  # Allow TF32 precision for matmuls
 ):
     """
     Sparse submanifold convolution backward to weight kernel using implicit GEMM.
@@ -145,15 +150,16 @@ def sparse_submanifold_conv_bwd_weight_masked_implicit_gemm_kernel(
     for k in range(num_k):
         # Calculate pointers to input and grad_output matrix.
         mask = offset_k < valid_signal_seglen - k * BK
-        input_offset_n = tl.load(valid_signal_i_ptr, mask=mask, other=0)   # (BK,)
-        grad_output_offset_n = tl.load(valid_signal_o_ptr, mask=mask, other=0)  # (BK,)
-        input_ptr = input + (input_offset_n[:, None] * Ci + offset_ci[None, :])                     # (BK, B2)
-        grad_output_ptr = grad_output + grad_output_offset_n[None, :] * Co + offset_co[:, None]     # (B1, BK)
+        input_offset_n = tl.load(valid_signal_i_ptr, mask=mask, other=0)                            # (BK,)
+        grad_output_offset_n = tl.load(valid_signal_o_ptr, mask=mask, other=0)                      # (BK,)
+        input_ptr = input + (input_offset_n[:, None].to(tl.int64) * Ci + offset_ci[None, :])                     # (BK, B2)
+        grad_output_ptr = grad_output + grad_output_offset_n[None, :].to(tl.int64) * Co + offset_co[:, None]     # (B1, BK)
         # Load the next block of input and grad_output.
         input_block = tl.load(input_ptr, mask=mask[:, None], other=0.0)
         grad_output_block = tl.load(grad_output_ptr, mask=mask[None, :], other=0.0)
         # Accumulate along the K dimension.
-        accumulator = tl.dot(grad_output_block, input_block, accumulator)           # (B1, B2)
+        accumulator = tl.dot(grad_output_block, input_block, accumulator,
+                             input_precision='tf32' if allow_tf32 else 'ieee')                      # (B1, B2)
         # Advance pointers.
         valid_signal_i_ptr += BK
         valid_signal_o_ptr += BK
@@ -205,6 +211,7 @@ def sparse_submanifold_conv_bwd_masked_implicit_gemm(
             N, LOGN, Ci, Co, V,
             valid_kernel=valid_kernel,
             valid_kernel_seg=valid_kernel_seg,
+            allow_tf32=config.allow_tf32,
         )
         
     # Grad for weight
@@ -221,6 +228,7 @@ def sparse_submanifold_conv_bwd_masked_implicit_gemm(
             valid_signal_seg,
             grad_weight,
             N, LOGN, Ci, Co, V,
+            allow_tf32=config.allow_tf32,
         )
         
     # Grad for bias

@@ -3,29 +3,7 @@ from tqdm import tqdm
 import torch
 import flex_gemm
 from flex_gemm.ops.spconv import SubMConv3dFunction
-
-
-def calc_err(src, ref):
-    abs_err = (src - ref).float().abs()
-    rel_err = abs_err / torch.clamp_min(ref.float().abs(), 1e-6)
-    err = torch.minimum(abs_err, rel_err).mean()
-    return err
-
-
-@torch.no_grad()
-def sphere_coords(res, ch, device='cuda', dtype=torch.float):
-    coords = torch.stack(torch.meshgrid(
-        torch.arange(res, device=device),
-        torch.arange(res, device=device),
-        torch.arange(res, device=device),
-        indexing='ij'
-    ), dim=-1).int().contiguous()
-    dist = ((coords.float() - res / 2 + 0.5) ** 2).sum(dim=-1).sqrt()
-    active = (dist <= res / 2) & (dist >= res / 2 - 1.25)
-    coords = torch.nonzero(active).int()
-    coords = torch.cat([torch.zeros(coords.shape[0], 1, device=device, dtype=torch.int32), coords], dim=-1)
-    feats = torch.randn(coords.shape[0], ch, device=device, dtype=dtype)
-    return feats, coords, torch.Size([1, ch, res, res, res])
+from utils import sphere_coords
 
 
 def benchmark_kernel(kernel_fn, *args, prepare_fn=None, num_warmup=10, num_iters=100, **kwargs):
@@ -35,7 +13,7 @@ def benchmark_kernel(kernel_fn, *args, prepare_fn=None, num_warmup=10, num_iters
     # Warmup iterations.
     for _ in range(num_warmup):
         C = kernel_fn(*args, **kwargs)
-    torch.cuda.reset_max_memory_allocated()
+    torch.cuda.reset_peak_memory_stats()
     torch.cuda.synchronize()
     # Timing iterations.
     start = time.time()
@@ -122,6 +100,7 @@ def test_neighbor_cache():
         {'RES': 256, 'C': 256},
         {'RES': 512, 'C': 128},
         {'RES': 1024, 'C': 64},
+        {'RES': 2048, 'C': 32},
     ]
     
     # List of custom kernel functions.

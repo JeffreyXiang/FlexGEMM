@@ -1,28 +1,8 @@
 import time
 from tqdm import tqdm
 import torch
-import flex_gemm
-from flex_gemm.ops.spconv import SubMConv3dFunction
 from flex_gemm import kernels
-
-
-flex_gemm.ops.spconv.set_algorithm(flex_gemm.ops.spconv.Algorithm.EXPLICIT_GEMM)
-
-
-@torch.no_grad()
-def sphere_coords(res, ch, device='cuda', dtype=torch.float):
-    coords = torch.stack(torch.meshgrid(
-        torch.arange(res, device=device),
-        torch.arange(res, device=device),
-        torch.arange(res, device=device),
-        indexing='ij'
-    ), dim=-1).int().contiguous()
-    dist = ((coords.float() - res / 2 + 0.5) ** 2).sum(dim=-1).sqrt()
-    active = (dist <= res / 2) & (dist >= res / 2 - 1.25)
-    coords = torch.nonzero(active).int()
-    coords = torch.cat([torch.zeros(coords.shape[0], 1, device=device, dtype=torch.int32), coords], dim=-1)
-    feats = torch.randn(coords.shape[0], ch, device=device, dtype=dtype)
-    return feats, coords, torch.Size([1, ch, res, res, res])
+from utils import sphere_coords
 
 
 @torch.no_grad()
@@ -32,9 +12,12 @@ def test_hashmap():
     
     test_cases = []
     for res in RES:
-        test_cases.append(res)
+        test_cases.append((res, (torch.uint32, torch.uint32)))
+        test_cases.append((res, (torch.uint32, torch.uint64)))
+        test_cases.append((res, (torch.uint64, torch.uint32)))
+        test_cases.append((res, (torch.uint64, torch.uint64)))
     
-    for res in tqdm(test_cases, leave=False):
+    for res, (dtype_key, dtype_value) in tqdm(test_cases, leave=False):
         time_insert = 0
         memory_insert = 0
         oom_insert = False
@@ -46,12 +29,13 @@ def test_hashmap():
         feats, coords, shape = sphere_coords(res, 0)
         for i in range(110):
             torch.cuda.synchronize()
-            torch.cuda.reset_max_memory_allocated()
+            torch.cuda.reset_peak_memory_stats()
             start_insert = time.time()
             try:
-                hashmap = torch.full((4 * coords.shape[0],), 0xffffffff, dtype=torch.uint32, device=coords.device)
-                values = torch.arange(coords.shape[0], device=coords.device).to(torch.uint32)
-                kernels.cuda.hashmap_insert_3d_cuda(hashmap, coords, values, res, res, res)
+                hashmap_keys = torch.full((2 * coords.shape[0],), torch.iinfo(dtype_key).max, dtype=dtype_key, device=coords.device)
+                hashmap_values = torch.empty((2 * coords.shape[0],), dtype=dtype_value, device=coords.device)
+                values = torch.randint(0, torch.iinfo(dtype_value).max//2, (coords.shape[0],), device=coords.device).to(dtype_value)
+                kernels.cuda.hashmap_insert_3d_cuda(hashmap_keys, hashmap_values, coords, values, res, res, res)
             
                 torch.cuda.synchronize()
                 end_insert = time.time()
@@ -66,10 +50,10 @@ def test_hashmap():
                     raise e
                 
             torch.cuda.synchronize()
-            torch.cuda.reset_max_memory_allocated()
+            torch.cuda.reset_peak_memory_stats()
             start_lookup = time.time()
             try:
-                values_ = kernels.cuda.hashmap_lookup_3d_cuda(hashmap, coords, res, res, res)
+                values_ = kernels.cuda.hashmap_lookup_3d_cuda(hashmap_keys, hashmap_values, coords, res, res, res)
                 torch.cuda.synchronize()
                 end_lookup = time.time()
                 if i > 10:
@@ -82,13 +66,13 @@ def test_hashmap():
                 else:
                     raise e
                 
-            assert torch.all(values == values_), f"Hashmap lookup failed for res={res}"
+            assert torch.all(values == values_), f"Hashmap lookup failed for res={res}, dtype_key={dtype_key}, dtype_value={dtype_value}"
             
         time_insert = f"{time_insert / cnt_insert:.5f}s" if cnt_insert > 0 else "N/A"
         memory_insert = "OOM" if oom_insert else f"{memory_insert / cnt_insert:.5f}G" if cnt_insert > 0 else "N/A"
         time_lookup = f"{time_lookup / cnt_lookup:.5f}s" if cnt_lookup > 0 else "N/A"
         memory_lookup = "OOM" if oom_lookup else f"{memory_lookup / cnt_lookup:.5f}G" if cnt_lookup > 0 else "N/A"
-        records[f"res={res}"] = {
+        records[f"res={res}, dtype_key={dtype_key}, dtype_value={dtype_value}"] = {
             'insert': f"{time_insert} | {memory_insert}",
             'lookup': f"{time_lookup} | {memory_lookup}",
         }

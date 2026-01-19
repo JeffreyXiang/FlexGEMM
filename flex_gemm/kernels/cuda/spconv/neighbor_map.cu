@@ -3,64 +3,37 @@
 #include <cuda_runtime.h>
 
 #include "neighbor_map.h"
+#include "../hash/api.h"
 #include "../hash/hash.cuh"
 
 
-/**
- * Insert 3D coordinates into the hashmap using index as value
- * 
- * @param N         number of elements in the hashmap
- * @param M         number of 3d coordinates
- * @param W         the number of width dimensions
- * @param H         the number of height dimensions
- * @param D         the number of depth dimensions
- * @param hashmap   [2N] uint32 tensor containing the hashmap (key-value pairs)
- * @param coords    [M, 4] int32 tensor containing the keys to be inserted
- */
-__global__ void hashmap_insert_3d_idx_as_val_cuda_kernel(
-    const uint32_t N,
-    const uint32_t M,
-    const int W,
-    const int H,
-    const int D,
-    uint32_t* __restrict__ hashmap,
-    const int32_t* __restrict__ coords
-) {
-    uint32_t thread_id = blockIdx.x * blockDim.x + threadIdx.x;
-    if (thread_id < M) {
-        int4 coord = reinterpret_cast<const int4*>(coords)[thread_id];
-        int b = coord.x;
-        int x = coord.y;
-        int y = coord.z;
-        int z = coord.w;
-        uint32_t key = static_cast<uint32_t>((((b * W + x) * H + y) * D + z));
-        linear_probing_insert(hashmap, key, thread_id, N);
-    }
-}
-
+namespace flex_gemm {
+namespace spconv {
 
 /**
  * Lookup sparse submanifold convolution neighbor map with hashmap
  * 
- * @param N         number of elements in the hashmap
- * @param M         number of 3d coordinates
- * @param W         the number of width dimensions
- * @param H         the number of height dimensions
- * @param D         the number of depth dimensions
- * @param V         the volume of the kernel
- * @param Kw        the number of width kernel dimensions
- * @param Kh        the number of height kernel dimensions
- * @param Kd        the number of depth kernel dimensions
- * @param Dw        the dialation of width
- * @param Dh        the dialation of height
- * @param Dd        the dialation of depth
- * @param hashmap   [2N] uint32 tensor containing the hashmap (key-value pairs)
- * @param coords    [M, 4] int32 tensor containing the keys to be looked up
- * @param neighbor [M, Kw * Kh * Kd] uint32 tensor containing the submanifold convolution nerbor map
+ * @param N             number of elements in the hashmap
+ * @param M             number of 3d coordinates
+ * @param W             the number of width dimensions
+ * @param H             the number of height dimensions
+ * @param D             the number of depth dimensions
+ * @param V             the volume of the kernel
+ * @param Kw            the number of width kernel dimensions
+ * @param Kh            the number of height kernel dimensions
+ * @param Kd            the number of depth kernel dimensions
+ * @param Dw            the dialation of width
+ * @param Dh            the dialation of height
+ * @param Dd            the dialation of depth
+ * @param hashmap_keys  [N] uint32/uint64 tensor containing the hashmap keys
+ * @param hashmap_vals  [N] uint32 tensor containing the hashmap values as tensor indices
+ * @param coords        [M, 4] int32 tensor containing the keys to be looked up
+ * @param neighbor      [M, Kw * Kh * Kd] uint32 tensor containing the submanifold convolution nerbor map
  */
+template<typename T>
 __global__ void hashmap_lookup_submanifold_conv_neighbour_map_cuda_kernel(
-    const uint32_t N,
-    const uint32_t M,
+    const size_t N,
+    const size_t M,
     const int W,
     const int H,
     const int D,
@@ -71,13 +44,14 @@ __global__ void hashmap_lookup_submanifold_conv_neighbour_map_cuda_kernel(
     const int Dw,
     const int Dh,
     const int Dd,
-    const uint32_t* __restrict__  hashmap,
+    const T* __restrict__  hashmap_keys,
+    const uint32_t* __restrict__  hashmap_vals,
     const int32_t* __restrict__  coords,
     uint32_t* __restrict__ neighbor
 ) {
-    int64_t thread_id = blockIdx.x * blockDim.x + threadIdx.x;
+    const size_t thread_id = blockIdx.x * blockDim.x + threadIdx.x;
     int half_V = V / 2 + 1;
-    uint32_t idx = thread_id / half_V;
+    uint32_t idx = static_cast<uint32_t>(thread_id / half_V);
     if (idx < M) {
         int4 coord = reinterpret_cast<const int4*>(coords)[idx];
         int b = coord.x;
@@ -87,7 +61,7 @@ __global__ void hashmap_lookup_submanifold_conv_neighbour_map_cuda_kernel(
         int KhKd = Kh * Kd;
         int v = thread_id % half_V;
         
-        uint32_t value = K_EMPTY;
+        uint32_t value = std::numeric_limits<uint32_t>::max();
         if (v == half_V - 1) {
             value = idx;
         }
@@ -96,9 +70,10 @@ __global__ void hashmap_lookup_submanifold_conv_neighbour_map_cuda_kernel(
             int ky = y + v / Kd % Kh * Dh;
             int kz = z + v % Kd * Dd;
             if (kx >= 0 && kx < W && ky >= 0 && ky < H && kz >= 0 && kz < D) {
-                uint32_t key = static_cast<uint32_t>((((b * W + kx) * H + ky) * D + kz));
-                value = linear_probing_lookup(hashmap, key, N);
-                if (value != K_EMPTY) {;
+                size_t flat_idx = (size_t)b * W * H * D + (size_t)kx * H * D + (size_t)ky * D + (size_t)kz;
+                T key = static_cast<T>(flat_idx);
+                value = flex_gemm::hash::linear_probing_lookup(hashmap_keys, hashmap_vals, key, N);
+                if (value != std::numeric_limits<uint32_t>::max()) {
                     neighbor[value * V + V - 1 - v] = idx;
                 }
             }
@@ -111,22 +86,24 @@ __global__ void hashmap_lookup_submanifold_conv_neighbour_map_cuda_kernel(
 /**
  * Build sparse submanifold convolution neighbor map with hashmap
  * 
- * @param hashmap   [2N] uint32 tensor containing the hashmap (key-value pairs)
- * @param coords    [M, 4] int32 tensor containing the keys to be looked up
- * @param W         the number of width dimensions
- * @param H         the number of height dimensions
- * @param D         the number of depth dimensions
- * @param Kw        the number of width kernel dimensions
- * @param Kh        the number of height kernel dimensions
- * @param Kd        the number of depth kernel dimensions
- * @param Dw        the dialation of width
- * @param Dh        the dialation of height
- * @param Dd        the dialation of depth
- * 
- * @return          [M, Kw * Kh * Kd] uint32 tensor containing the submanifold convolution neighbor map
+ * @param hashmap_keys  [N] uint32/uint64 tensor containing the hashmap keys
+ * @param hashmap_vals  [N] uint32 tensor containing the hashmap values as tensor indices
+ * @param coords        [M, 4] int32 tensor containing the keys to be looked up
+ * @param W             the number of width dimensions
+ * @param H             the number of height dimensions
+ * @param D             the number of depth dimensions
+ * @param Kw            the number of width kernel dimensions
+ * @param Kh            the number of height kernel dimensions
+ * @param Kd            the number of depth kernel dimensions
+ * @param Dw            the dialation of width
+ * @param Dh            the dialation of height
+ * @param Dd            the dialation of depth
+ *  
+ * @return              [M, Kw * Kh * Kd] uint32 tensor containing the submanifold convolution neighbor map
  */
 torch::Tensor hashmap_build_submanifold_conv_neighbour_map_cuda(
-    const torch::Tensor& hashmap,
+    torch::Tensor& hashmap_keys,
+    torch::Tensor& hashmap_vals,
     const torch::Tensor& coords,
     int W,
     int H,
@@ -140,43 +117,52 @@ torch::Tensor hashmap_build_submanifold_conv_neighbour_map_cuda(
 ) {
     // Allocate output tensor
     int V = Kw * Kh * Kd;
-    auto neighbor = torch::full({coords.size(0), V}, K_EMPTY, torch::dtype(torch::kUInt32).device(hashmap.device()));
 
     // Insert 3D coordinates into the hashmap
-    hashmap_insert_3d_idx_as_val_cuda_kernel<<<
-        (coords.size(0) + BLOCK_SIZE - 1) / BLOCK_SIZE,
-        BLOCK_SIZE
-    >>>(
-        hashmap.size(0) / 2,
-        coords.size(0),
-        W,
-        H,
-        D,
-        hashmap.data_ptr<uint32_t>(),
-        coords.data_ptr<int32_t>()
+    flex_gemm::hash::hashmap_insert_3d_idx_as_val_cuda(
+        hashmap_keys,
+        hashmap_vals,
+        coords,
+        W, H, D
     );
 
-    // Lookup sparse submanifold convolution neighbor map with hashmap
-    hashmap_lookup_submanifold_conv_neighbour_map_cuda_kernel<<<
-        (coords.size(0) * (V / 2 + 1) + BLOCK_SIZE - 1) / BLOCK_SIZE,
-        BLOCK_SIZE
-    >>>(
-        hashmap.size(0) / 2,
-        coords.size(0),
-        W,
-        H,
-        D,
-        V,
-        Kw,
-        Kh,
-        Kd,
-        Dw,
-        Dh,
-        Dd,
-        hashmap.data_ptr<uint32_t>(),
-        coords.data_ptr<int32_t>(),
-        neighbor.data_ptr<uint32_t>()
-    );
+    auto neighbor = torch::full({coords.size(0), V}, std::numeric_limits<uint32_t>::max(), torch::dtype(torch::kUInt32).device(hashmap_keys.device()));
+
+    if (hashmap_keys.dtype() == torch::kUInt32) {
+        hashmap_lookup_submanifold_conv_neighbour_map_cuda_kernel<<<
+            (coords.size(0) * (V / 2 + 1) + BLOCK_SIZE - 1) / BLOCK_SIZE,
+            BLOCK_SIZE
+        >>>(
+            hashmap_keys.size(0),
+            coords.size(0),
+            W, H, D, V,
+            Kw, Kh, Kd,
+            Dw, Dh, Dd,
+            hashmap_keys.data_ptr<uint32_t>(),
+            hashmap_vals.data_ptr<uint32_t>(),
+            coords.data_ptr<int32_t>(),
+            neighbor.data_ptr<uint32_t>()
+        );
+    }
+    else if (hashmap_keys.dtype() == torch::kUInt64) {
+        hashmap_lookup_submanifold_conv_neighbour_map_cuda_kernel<<<
+            (coords.size(0) * (V / 2 + 1) + BLOCK_SIZE - 1) / BLOCK_SIZE,
+            BLOCK_SIZE
+        >>>(
+            hashmap_keys.size(0),
+            coords.size(0),
+            W, H, D, V,
+            Kw, Kh, Kd,
+            Dw, Dh, Dd,
+            hashmap_keys.data_ptr<uint64_t>(),
+            hashmap_vals.data_ptr<uint32_t>(),
+            coords.data_ptr<int32_t>(),
+            neighbor.data_ptr<uint32_t>()
+        );
+    }
+    else {
+        TORCH_CHECK(false, "Unsupported hashmap dtype. Expect uint32 or uint64.");
+    }
 
     return neighbor;
 }
@@ -228,10 +214,10 @@ __global__ void neighbor_map_to_gray_binary_code_and_T_map_cuda_kernel(
     while (idx < total_len) {
         int v = idx / len_n;
         int n = idx % len_n;
-        uint tmp = neigh_map[n * V + v];
-        *(uint*)&neigh_map_T[v * N + n + n_base] = tmp;
-        tmp = tmp != K_EMPTY;
-        *(uint*)&neigh_mask_T[v * N + n + n_base] = tmp;
+        uint32_t tmp = neigh_map[n * V + v];
+        neigh_map_T[v * N + n + n_base] = tmp;
+        tmp = tmp != std::numeric_limits<uint32_t>::max();
+        neigh_mask_T[v * N + n + n_base] = tmp;
         idx += BLOCK_SIZE;
     }
 
@@ -240,7 +226,7 @@ __global__ void neighbor_map_to_gray_binary_code_and_T_map_cuda_kernel(
         uint32_t gray = 0;
         for (uint32_t v = 0; v < V; v++) {
             uint32_t neighbor = neigh_map[threadIdx.x * V + v];
-            if (neighbor != K_EMPTY) gray += 1 << v;
+            if (neighbor != std::numeric_limits<uint32_t>::max()) gray += 1 << v;
         }
         // Gray code to binary code
         uint32_t binary = gray;
@@ -429,7 +415,7 @@ std::tuple<torch::Tensor, torch::Tensor> neighbor_map_post_process_for_masked_im
     const torch::Tensor& sorted_idx,
     int block_size
 ) {
-    const int64_t N = gray_code.size(0);
+    const uint32_t N = gray_code.size(0);
     
     // Reduce gray code to reduced code and segment length
     auto num_blocks = (N + block_size - 1) / block_size;
@@ -464,4 +450,5 @@ std::tuple<torch::Tensor, torch::Tensor> neighbor_map_post_process_for_masked_im
     return std::make_tuple(valid_kernel_idx, seglen);
 }
 
-
+} // namespace spconv
+} // namespace flex_gemm

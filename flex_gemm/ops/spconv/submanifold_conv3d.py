@@ -2,7 +2,7 @@ from typing import *
 import torch
 from torch.autograd import Function
 from . import Algorithm
-from .. import spconv
+from .. import spconv, utils
 from ... import kernels
 
 
@@ -42,14 +42,15 @@ class SubMConv3dFunction(Function):
         dilation: Tuple[int, int, int]
     ) -> SubMConv3dNeighborCache:
         assert coords.is_contiguous(), "Coords should be contiguous"
-        hashmap = torch.full((2 * int(spconv.HASHMAP_RATIO * coords.shape[0]),), 0xffffffff, dtype=torch.uint32, device=coords.device)
+        assert coords.dtype in [torch.int32], "Unsupported coords dtype. Expect int32"
         N, C, W, H, D = shape
-        assert N * W * H * D <= 2**32, "Currently, the max number of elements in a tensor is 2^32"
         
+        hashmap_keys, hashmap_vals = utils.init_hashmap(shape, int(spconv.HASHMAP_RATIO * coords.shape[0]), coords.device)
+
         if spconv.ALGORITHM in [Algorithm.EXPLICIT_GEMM, Algorithm.IMPLICIT_GEMM, Algorithm.IMPLICIT_GEMM_SPLITK]:
             if coords.is_cuda:
                 neighbor_map = kernels.cuda.hashmap_build_submanifold_conv_neighbour_map_cuda(
-                    hashmap, coords,
+                    hashmap_keys, hashmap_vals, coords,
                     W, H, D,
                     kernel_size[0], kernel_size[1], kernel_size[2],
                     dilation[0], dilation[1], dilation[2],
@@ -63,7 +64,7 @@ class SubMConv3dFunction(Function):
         elif spconv.ALGORITHM in [Algorithm.MASKED_IMPLICIT_GEMM, Algorithm.MASKED_IMPLICIT_GEMM_SPLITK]:
             if coords.is_cuda:
                 neighbor_map = kernels.cuda.hashmap_build_submanifold_conv_neighbour_map_cuda(
-                    hashmap, coords,
+                    hashmap_keys, hashmap_vals, coords,
                     W, H, D,
                     kernel_size[0], kernel_size[1], kernel_size[2],
                     dilation[0], dilation[1], dilation[2],
@@ -134,7 +135,7 @@ class SubMConv3dFunction(Function):
     ) -> torch.Tensor:
         assert feats.is_contiguous(), "Input features should be contiguous"
         N = feats.shape[0]
-        Co, Kd, Kh, Kw, Ci = weight.shape
+        Co, Kw, Kh, Kd, Ci = weight.shape
         V = Kd * Kh * Kw
         
         if spconv.ALGORITHM == Algorithm.EXPLICIT_GEMM:        
@@ -200,12 +201,12 @@ class SubMConv3dFunction(Function):
     def _sparse_submanifold_conv_backward(
         grad_output: torch.Tensor,
         feats: torch.Tensor,
-        neighbor_cache: Dict[str, torch.Tensor],
+        neighbor_cache: SubMConv3dNeighborCache,
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
         N = feats.shape[0]
-        Co, Kd, Kh, Kw, Ci = weight.shape
+        Co, Kw, Kh, Kd, Ci = weight.shape
         V = Kd * Kh * Kw
 
         if spconv.ALGORITHM == Algorithm.EXPLICIT_GEMM:
@@ -232,7 +233,7 @@ class SubMConv3dFunction(Function):
                 im2col = im2col.view(N, V * Ci)
                 
                 # addmm
-                grad_weight = torch.mm(im2col.t(), grad_output.view(N, -1)).view(V, Ci, Co).permute(2, 0, 1).contiguous().view(Co, Kd, Kh, Kw, Ci)
+                grad_weight = torch.mm(im2col.t(), grad_output.view(N, -1)).view(V, Ci, Co).permute(2, 0, 1).contiguous().view(Co, Kw, Kh, Kd, Ci)
             else:
                 grad_weight = None
             
@@ -249,7 +250,7 @@ class SubMConv3dFunction(Function):
                 bias,
                 neighbor_cache['neighbor_map']
             )
-            grad_weight = grad_weight.reshape(Co, Kd, Kh, Kw, Ci)
+            grad_weight = grad_weight.reshape(Co, Kw, Kh, Kd, Ci)
             
         elif spconv.ALGORITHM == Algorithm.IMPLICIT_GEMM_SPLITK:
             grad_input, grad_weight, grad_bias = kernels.triton.sparse_submanifold_conv_bwd_implicit_gemm_splitk(
@@ -259,7 +260,7 @@ class SubMConv3dFunction(Function):
                 bias,
                 neighbor_cache['neighbor_map']
             )
-            grad_weight = grad_weight.reshape(Co, Kd, Kh, Kw, Ci)
+            grad_weight = grad_weight.reshape(Co, Kw, Kh, Kd, Ci)
             
         elif spconv.ALGORITHM == Algorithm.MASKED_IMPLICIT_GEMM:
             grad_input, grad_weight, grad_bias = kernels.triton.sparse_submanifold_conv_bwd_masked_implicit_gemm(
@@ -275,7 +276,7 @@ class SubMConv3dFunction(Function):
                 neighbor_cache['valid_signal_o'],
                 neighbor_cache['valid_signal_seg']
             )
-            grad_weight = grad_weight.reshape(Co, Kd, Kh, Kw, Ci)
+            grad_weight = grad_weight.reshape(Co, Kw, Kh, Kd, Ci)
         
         elif spconv.ALGORITHM == Algorithm.MASKED_IMPLICIT_GEMM_SPLITK:
             grad_input, grad_weight, grad_bias = kernels.triton.sparse_submanifold_conv_bwd_masked_implicit_gemm_splitk(
@@ -291,7 +292,7 @@ class SubMConv3dFunction(Function):
                 neighbor_cache['valid_signal_o'],
                 neighbor_cache['valid_signal_seg']
             )
-            grad_weight = grad_weight.reshape(Co, Kd, Kh, Kw, Ci)
+            grad_weight = grad_weight.reshape(Co, Kw, Kh, Kd, Ci)
             
         else:
             raise ValueError(f"Unsupported algorithm {spconv.ALGORITHM}")
@@ -309,7 +310,7 @@ class SubMConv3dFunction(Function):
         bias: Optional[torch.Tensor] = None,
         dilation: Tuple[int, int, int] = (1, 1, 1),
     ) -> Tuple[torch.Tensor, SubMConv3dNeighborCache]:
-        Co, Kd, Kh, Kw, Ci = weight.shape
+        Co, Kw, Kh, Kd, Ci = weight.shape
         assert feats.shape[-1] == Ci, f"Input channels ({feats.shape[-1]}) should match weight channels ({Ci})"
         
         # check if neighbor map is already computed
@@ -341,4 +342,31 @@ class SubMConv3dFunction(Function):
         return grad_input, None, None, None, grad_weight, grad_bias, None
 
 
-sparse_submanifold_conv3d = SubMConv3dFunction.apply
+def sparse_submanifold_conv3d(
+    feats: torch.Tensor,
+    coords: torch.Tensor,
+    shape: torch.Size,
+    weight: torch.Tensor,
+    bias: Optional[torch.Tensor] = None,
+    neighbor_cache: Optional[SubMConv3dNeighborCache] = None,
+    dilation: Tuple[int, int, int] = (1, 1, 1),
+) -> Tuple[torch.Tensor, SubMConv3dNeighborCache]:
+    """
+    Sparse submanifold convolution for 3D input.
+
+    Args:
+        feats (torch.Tensor): [N, C] tensor of input features.
+        coords (torch.Tensor): [N, 4] tensor of input coordinates.
+        shape (torch.Size): shape of the input tensor in NCWHD order.
+        weight (torch.Tensor): [Co, Kw, Kh, Kd, Ci] tensor of weights.
+        bias (Optional[torch.Tensor]): [Co] tensor of biases.
+        neighbor_cache (Optional[SubMConv3dNeighborCache]): neighbor cache for forward.
+            if None, will be computed in forward.
+        dilation (Tuple[int, int, int]): dilation rate.
+
+    Returns:
+        Tuple[torch.Tensor, SubMConv3dNeighborCache]:
+            - output (torch.Tensor): [N, Co] tensor of output features.
+            - neighbor_cache (SubMConv3dNeighborCache): neighbor cache for backward.
+    """
+    return SubMConv3dFunction.apply(feats, coords, shape, neighbor_cache, weight, bias, dilation)

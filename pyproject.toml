@@ -1,0 +1,25 @@
+[build-system]
+requires = [
+    "setuptools>=64",
+    "wheel",
+    "torch",
+]
+build-backend = "setuptools.build_meta"
+
+
+[project]
+name = "flex_gemm"
+version = "1.0.0"
+description = "A Cross-Platform Backend for High-Performance Sparse Convolutions"
+requires-python = ">=3.8"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Jianfeng Xiang", email = "belljig@outlook.com" }
+]
+dependencies = [
+    "torch>=2.4.0",
+    "triton>=3.2.0; platform_system != 'Windows'",
+    "triton-windows>=3.2.0; platform_system == 'Windows'",
+    "filelock",
+]

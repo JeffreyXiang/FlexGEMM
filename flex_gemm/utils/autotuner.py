@@ -324,45 +324,74 @@ def walk_package(package_name, fn):
             fn(full_module_name)
             
 
+def get_autotune_cache():
+    cache = {}
+    device_name = torch.cuda.get_device_name()
+    if device_name not in cache:
+        cache[device_name] = {}
+
+    def save_cache(full_module_name):
+        module = importlib.import_module(full_module_name)
+        for attr_name, attr in module.__dict__.items():
+            cache_key = f"{full_module_name}.{attr_name}"
+            if isinstance(attr, PersistentCacheAutoTuner):
+                cache[device_name][cache_key] = attr.cache
+            elif isinstance(attr, TritonPersistentCacheAutotuner):
+                cache[device_name][cache_key] = {k: v.__dict__ for k, v in attr.cache.items()}
+
+    walk_package('flex_gemm', save_cache)
+
+    return cache
+
+
 def save_autotune_cache(path=None):
     path = path or AUTOTUNE_CACHE_PATH
     lock_path = path + ".lock"
-    
+
     with FileLock(lock_path):
         if os.path.exists(path):
             with open(path, 'r') as f:
                 cache = json.load(f)
         else:
             cache = {}
-        device_name = torch.cuda.get_device_name()
-        if device_name not in cache:
-            cache[device_name] = {}
+        # Merge existing cache with new cache
+        cache.update(get_autotune_cache())
 
-        def save_cache(full_module_name):
-            module = importlib.import_module(full_module_name)
-            for attr_name, attr in module.__dict__.items():
-                cache_key = f"{full_module_name}.{attr_name}"
-                if isinstance(attr, PersistentCacheAutoTuner):
-                    cache[device_name][cache_key] = attr.cache
-                elif isinstance(attr, TritonPersistentCacheAutotuner):
-                    cache[device_name][cache_key] = {k: v.__dict__ for k, v in attr.cache.items()}
-
-        walk_package('flex_gemm', save_cache)
-        with open(path, 'w') as f:
+        tmp_path = path + ".tmp"
+        with open(tmp_path, 'w') as f:
             json.dump(cache, f, indent=4)
             f.flush()
             os.fsync(f.fileno())
-        
-        
-def load_autotune_cache(path=None):
-    path = path or AUTOTUNE_CACHE_PATH
-    if not os.path.exists(path):
+        os.replace(tmp_path, path)
+
+
+def load_autotune_cache(path_or_cache=None):
+    cache = None
+
+    # Preserve path-based loading, but allow callers to provide a preloaded cache object.
+    if path_or_cache is None or isinstance(path_or_cache, (str, os.PathLike)):
+        path = path_or_cache or AUTOTUNE_CACHE_PATH
+        lock_path = path + ".lock"
+
+        if not os.path.exists(path):
+            return
+
+        with FileLock(lock_path):
+            with open(path, 'r') as f:
+                cache = json.load(f)
+    elif isinstance(path_or_cache, Mapping):
+        cache = path_or_cache
+    else:
+        raise TypeError("load_autotune_cache expects a path or a mapping")
+
+    if cache is None:
         return
-    with open(path, 'r') as f:
-        cache = json.load(f)
+
     device_name = torch.cuda.get_device_name()
-    if device_name not in cache:
+    if device_name not in cache and "*" not in cache:
         return
+    if "*" in cache and device_name not in cache:
+        device_name = "*"
 
     def load_cache(full_module_name):
         module = importlib.import_module(full_module_name)
