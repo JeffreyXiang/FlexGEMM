@@ -64,8 +64,10 @@ def spconv_kernel_fn(module, input):
 
 def egemm_prepare_fn(coords: torch.Tensor, shape: torch.Size, weight: torch.Tensor, ksize, stride, padding, dilation, **kwargs):
     flex_gemm.ops.spconv.set_algorithm(flex_gemm.ops.spconv.Algorithm.EXPLICIT_GEMM)
-    neighbor_cache = SparseConv3dFunction._compute_neighbor_cache(coords, shape, ksize, stride, padding, dilation, False)
+    out_coords = SparseConv3dFunction._get_output_coords(coords, shape, ksize, stride, padding, dilation)
+    neighbor_cache = SparseConv3dFunction._compute_neighbor_cache(coords, out_coords, shape, ksize, stride, padding, dilation, False)
     return {
+        'out_coords': out_coords,
         'weight': weight,
         'neighbor_cache': neighbor_cache,
         **kwargs,
@@ -74,8 +76,10 @@ def egemm_prepare_fn(coords: torch.Tensor, shape: torch.Size, weight: torch.Tens
     
 def igemm_prepare_fn(coords: torch.Tensor, shape: torch.Size, weight: torch.Tensor, ksize, stride, padding, dilation, **kwargs):
     flex_gemm.ops.spconv.set_algorithm(flex_gemm.ops.spconv.Algorithm.IMPLICIT_GEMM)
-    neighbor_cache = SparseConv3dFunction._compute_neighbor_cache(coords, shape, ksize, stride, padding, dilation, False)
+    out_coords = SparseConv3dFunction._get_output_coords(coords, shape, ksize, stride, padding, dilation)
+    neighbor_cache = SparseConv3dFunction._compute_neighbor_cache(coords, out_coords, shape, ksize, stride, padding, dilation, False)
     return {
+        'out_coords': out_coords,
         'weight': weight,
         'neighbor_cache': neighbor_cache,
         **kwargs,
@@ -84,8 +88,10 @@ def igemm_prepare_fn(coords: torch.Tensor, shape: torch.Size, weight: torch.Tens
 
 def igemmk_prepare_fn(coords: torch.Tensor, shape: torch.Size, weight: torch.Tensor, ksize, stride, padding, dilation, **kwargs):
     flex_gemm.ops.spconv.set_algorithm(flex_gemm.ops.spconv.Algorithm.IMPLICIT_GEMM_SPLITK)
-    neighbor_cache = SparseConv3dFunction._compute_neighbor_cache(coords, shape, ksize, stride, padding, dilation, False)
+    out_coords = SparseConv3dFunction._get_output_coords(coords, shape, ksize, stride, padding, dilation)
+    neighbor_cache = SparseConv3dFunction._compute_neighbor_cache(coords, out_coords, shape, ksize, stride, padding, dilation, False)
     return {
+        'out_coords': out_coords,
         'weight': weight,
         'neighbor_cache': neighbor_cache,
         **kwargs,
@@ -94,8 +100,10 @@ def igemmk_prepare_fn(coords: torch.Tensor, shape: torch.Size, weight: torch.Ten
 
 def migemm_prepare_fn(coords: torch.Tensor, shape: torch.Size, weight: torch.Tensor, ksize, stride, padding, dilation, **kwargs):
     flex_gemm.ops.spconv.set_algorithm(flex_gemm.ops.spconv.Algorithm.MASKED_IMPLICIT_GEMM)
-    neighbor_cache = SparseConv3dFunction._compute_neighbor_cache(coords, shape, ksize, stride, padding, dilation, False)
+    out_coords = SparseConv3dFunction._get_output_coords(coords, shape, ksize, stride, padding, dilation)
+    neighbor_cache = SparseConv3dFunction._compute_neighbor_cache(coords, out_coords, shape, ksize, stride, padding, dilation, False)
     return {
+        'out_coords': out_coords,
         'weight': weight,
         'neighbor_cache': neighbor_cache,
         **kwargs,
@@ -104,18 +112,19 @@ def migemm_prepare_fn(coords: torch.Tensor, shape: torch.Size, weight: torch.Ten
 
 def migemmk_prepare_fn(coords: torch.Tensor, shape: torch.Size, weight: torch.Tensor, ksize, stride, padding, dilation, **kwargs):
     flex_gemm.ops.spconv.set_algorithm(flex_gemm.ops.spconv.Algorithm.MASKED_IMPLICIT_GEMM_SPLITK)
-    neighbor_cache = SparseConv3dFunction._compute_neighbor_cache(coords, shape, ksize, stride, padding, dilation, False)
+    out_coords = SparseConv3dFunction._get_output_coords(coords, shape, ksize, stride, padding, dilation)
+    neighbor_cache = SparseConv3dFunction._compute_neighbor_cache(coords, out_coords, shape, ksize, stride, padding, dilation, False)
     return {
+        'out_coords': out_coords,
         'weight': weight,
         'neighbor_cache': neighbor_cache,
         **kwargs,
     }
     
 
-def flex_gemm_kernel_fn(**kwargs):
+def flex_gemm_kernel_fn(out_coords, **kwargs):
     feats = SparseConv3dFunction._sparse_conv_forward(**kwargs)
-    coords = kwargs['neighbor_cache'].out_coords
-    return [feats, coords]
+    return [feats, out_coords]
 
 
 def test_conv_fwd():
@@ -181,7 +190,8 @@ def test_conv_fwd():
             'tflops': [],
         }
         
-        neighbor_cache = SparseConv3dFunction._compute_neighbor_cache(coords, shape, K, S, P, D, False)
+        out_coords = SparseConv3dFunction._get_output_coords(coords, shape, K, S, P, D)
+        neighbor_cache = SparseConv3dFunction._compute_neighbor_cache(coords, out_coords, shape, K, S, P, D, False)
         L = (neighbor_cache['neighbor_map']!=0xffffffff).sum()
         total_flops = 2 * L * C * C
         

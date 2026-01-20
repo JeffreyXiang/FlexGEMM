@@ -22,6 +22,14 @@ class SparseConv3dNeighborCache:
         self[f'valid_kernel_{block_size}'] = valid_kernel
         self[f'valid_kernel_seg_{block_size}'] = valid_kernel_seg
         
+    # NOTE:
+    # valid_kernel and valid_kernel_seg are block-size dependent because
+    # Triton kernels use different block-sizes during autotuning.
+    #
+    # We lazily compute and cache them here to:
+    #   1. Avoid recomputation across multiple kernel launches
+    #   2. Support multiple Triton specializations with the same neighbor cache
+        
     def valid_kernel_callback(self, block_size: int) -> torch.Tensor:
         if not hasattr(self, f'valid_kernel_{block_size}'):
             self.compute_kernel_idx(block_size)
@@ -123,20 +131,18 @@ class SparseConv3dFunction(Function):
     @staticmethod
     def _compute_neighbor_cache(
         coords: torch.Tensor,
+        out_coords: torch.Tensor,
         shape: torch.Size,
         kernel_size: Tuple[int, int, int],
         stride: Tuple[int, int, int],
         padding: Tuple[int, int, int],
         dilation: Tuple[int, int, int],
         needs_grad: bool,
+        is_out_coords_given: bool = False,
     ) -> SparseConv3dNeighborCache:
         assert coords.is_contiguous(), "Coords should be contiguous"
         assert coords.dtype in [torch.int32], "Unsupported coords dtype. Expect int32"
         N, C, W, H, D = shape
-        
-        out_coords = SparseConv3dFunction._get_output_coords(
-            coords, shape, kernel_size, stride, padding, dilation
-        )
         
         if spconv.ALGORITHM in [Algorithm.EXPLICIT_GEMM, Algorithm.IMPLICIT_GEMM, Algorithm.IMPLICIT_GEMM_SPLITK]:
             if coords.is_cuda:
@@ -151,7 +157,6 @@ class SparseConv3dFunction(Function):
             else:
                 raise NotImplementedError("CPU version of hashmap is not implemented")
             return SparseConv3dNeighborCache(**{
-                'out_coords': out_coords,
                 'neighbor_map': neighbor_map,
                 'neighbor_map_bwd': neighbor_map_bwd,
             })
@@ -175,7 +180,6 @@ class SparseConv3dFunction(Function):
                 gray_code, sorted_idx, valid_signal_i, valid_signal_o, valid_signal_seg = \
                     kernels.cuda.neighbor_map_post_process_for_masked_implicit_gemm_1(neighbor_map)
                 cache = SparseConv3dNeighborCache(**{
-                    'out_coords': out_coords,
                     'neighbor_map': neighbor_map,
                     'neighbor_map_bwd': neighbor_map_bwd,
                     'gray_code': gray_code,
@@ -184,7 +188,19 @@ class SparseConv3dFunction(Function):
                     'valid_signal_i': valid_signal_i,
                     'valid_signal_o': valid_signal_o,
                 })
-                if any([s != 1 for s in stride]):
+                if any([s != 1 for s in stride]) or is_out_coords_given:
+                    # NOTE:
+                    # In backward pass, workload reordering (sort by kernel mask) is only
+                    # necessary when the kernel mask distribution is highly irregular.
+                    #
+                    # For stride == 1 and auto-generated out_coords:
+                    #   - Almost all kernel offsets are valid for each input voxel
+                    #   - Bwd kernel masks are nearly all valid
+                    #   - Reordering is not necessary, use IGEMM
+                    #
+                    # For stride > 1 or user-provided out_coords:
+                    #   - Kernel masks vary significantly across voxels
+                    #   - Sorting by kernel mask greatly improves warp-level efficiency
                     gray_code_bwd, sorted_idx_bwd = \
                         kernels.cuda.neighbor_map_post_process_for_masked_implicit_gemm_1_no_bwd(neighbor_map_bwd)
                     cache['gray_code_bwd'] = gray_code_bwd
@@ -194,7 +210,6 @@ class SparseConv3dFunction(Function):
                 gray_code, sorted_idx = \
                     kernels.cuda.neighbor_map_post_process_for_masked_implicit_gemm_1_no_bwd(neighbor_map)
                 return SparseConv3dNeighborCache(**{
-                    'out_coords': out_coords,
                     'neighbor_map': neighbor_map,
                     'neighbor_map_bwd': neighbor_map_bwd,
                     'gray_code': gray_code,
@@ -206,6 +221,7 @@ class SparseConv3dFunction(Function):
 
     def _compute_neighbor_cache_torch(
         coords: torch.Tensor,
+        out_coords: torch.Tensor,
         shape: torch.Size,
         kernel_size: Tuple[int, int, int],
         stride: Tuple[int, int, int],
@@ -215,9 +231,6 @@ class SparseConv3dFunction(Function):
     ) -> SparseConv3dNeighborCache:
         assert spconv.ALGORITHM == Algorithm.EXPLICIT_GEMM, "Only explicit_gemm is supported for torch implementation"
         N, C, W, H, D = shape
-        out_coords = SparseConv3dFunction._get_output_coords(
-            coords, shape, kernel_size, stride, padding, dilation
-        )
         M = coords.shape[0]
         L = out_coords.shape[0]
         V = kernel_size[0] * kernel_size[1] * kernel_size[2]
@@ -257,7 +270,6 @@ class SparseConv3dFunction(Function):
         else:
             neighbor_map_bwd = None
         return SparseConv3dNeighborCache(**{
-            'out_coords': out_coords,
             'neighbor_map': neighbor_map.reshape(L, -1).to(torch.uint32),
             'neighbor_map_bwd': neighbor_map_bwd.reshape(M, -1).to(torch.uint32) if needs_grad else None,
         })
@@ -446,6 +458,7 @@ class SparseConv3dFunction(Function):
         neighbor_cache: Optional[SparseConv3dNeighborCache],
         weight: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
+        out_coords: Optional[torch.Tensor] = None,
         stride: Tuple[int, int, int] = (1, 1, 1),
         padding: Tuple[int, int, int] = (0, 0, 0),
         dilation: Tuple[int, int, int] = (1, 1, 1),
@@ -453,10 +466,13 @@ class SparseConv3dFunction(Function):
         Co, Kw, Kh, Kd, Ci = weight.shape
         assert feats.shape[-1] == Ci, f"Input channels ({feats.shape[-1]}) should match weight channels ({Ci})"
         need_grad = any(ctx.needs_input_grad)
+        
+        if out_coords is None:
+            out_coords = SparseConv3dFunction._get_output_coords(coords, shape, (Kw, Kh, Kd), stride, padding, dilation)
 
         # check if neighbor map is already computed
         if neighbor_cache is None:
-            neighbor_cache = SparseConv3dFunction._compute_neighbor_cache(coords, shape, (Kw, Kh, Kd), stride, padding, dilation, need_grad)
+            neighbor_cache = SparseConv3dFunction._compute_neighbor_cache(coords, out_coords, shape, (Kw, Kh, Kd), stride, padding, dilation, need_grad)
             
         # compute output
         output = SparseConv3dFunction._sparse_conv_forward(feats, neighbor_cache, weight, bias)
@@ -465,10 +481,10 @@ class SparseConv3dFunction(Function):
         ctx.save_for_backward(feats, weight, bias)
         ctx.neighbor_cache = neighbor_cache
         
-        return output, neighbor_cache
+        return output, out_coords, neighbor_cache
     
     @staticmethod
-    def backward(ctx, grad_output: torch.Tensor, _):
+    def backward(ctx, grad_output: torch.Tensor, _, __):
         feats, weight, bias = ctx.saved_tensors
         neighbor_cache = ctx.neighbor_cache
         
@@ -490,10 +506,11 @@ def sparse_conv3d(
     weight: torch.Tensor,
     bias: Optional[torch.Tensor] = None,
     neighbor_cache: Optional[SparseConv3dNeighborCache] = None,
+    out_coords: Optional[torch.Tensor] = None,
     stride: Tuple[int, int, int] = (1, 1, 1),
     padding: Tuple[int, int, int] = (0, 0, 0),
     dilation: Tuple[int, int, int] = (1, 1, 1),
-) -> Tuple[torch.Tensor, SparseConv3dNeighborCache]:
+) -> Tuple[torch.Tensor, torch.Tensor, SparseConv3dNeighborCache]:
     """
     Sparse convolution for 3D input.
 
@@ -506,13 +523,17 @@ def sparse_conv3d(
         neighbor_cache (Optional[SparseConv3dNeighborCache]): neighbor cache for this operation.
             Can be reused for multiple runs using the same coordinates.
             if None, will be computed on the fly.
+        out_coords (Optional[torch.Tensor]): [M, 4] tensor of output coordinates.
+            If None, will be calculated based on the input shape, kernel size, stride, padding, and dilation.
+            If specified, will be used as the output coordinates.
         stride (Tuple[int, int, int]): stride of the convolution.
         padding (Tuple[int, int, int]): padding of the convolution.
         dilation (Tuple[int, int, int]): dilation rate.
 
     Returns:
         Tuple[torch.Tensor, SparseConv3dNeighborCache]:
-            - output (torch.Tensor): [N, Co] tensor of output features.
+            - out_feats (torch.Tensor): [M, Co] tensor of output features.
+            - out_coords (torch.Tensor): [M, 4] tensor of output coordinates.
             - neighbor_cache (SparseConv3dNeighborCache): neighbor cache for this operation.
     """
-    return SparseConv3dFunction.apply(feats, coords, shape, neighbor_cache, weight, bias, stride, padding, dilation)
+    return SparseConv3dFunction.apply(feats, coords, shape, neighbor_cache, weight, bias, out_coords, stride, padding, dilation)

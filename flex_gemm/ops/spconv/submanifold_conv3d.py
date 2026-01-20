@@ -22,6 +22,14 @@ class SubMConv3dNeighborCache:
         self[f'valid_kernel_{block_size}'] = valid_kernel
         self[f'valid_kernel_seg_{block_size}'] = valid_kernel_seg
         
+    # NOTE:
+    # valid_kernel and valid_kernel_seg are block-size dependent because
+    # Triton kernels use different block-sizes during autotuning.
+    #
+    # We lazily compute and cache them here to:
+    #   1. Avoid recomputation across multiple kernel launches
+    #   2. Support multiple Triton specializations with the same neighbor cache
+        
     def valid_kernel_callback(self, block_size: int) -> torch.Tensor:
         if not hasattr(self, f'valid_kernel_{block_size}'):
             self.compute_kernel_idx(block_size)

@@ -83,9 +83,10 @@ def spconv_kernel_fn(input, weight, bias, output, grad_output):
 
 def egemm_prepare_fn(grad_output: torch.Tensor, coords: torch.Tensor, shape: torch.Size, weight: torch.Tensor, ksize, stride, padding, dilation, **kwargs):
     flex_gemm.ops.spconv.set_algorithm(flex_gemm.ops.spconv.Algorithm.EXPLICIT_GEMM)
-    neighbor_cache = SparseConv3dFunction._compute_neighbor_cache(coords, shape, ksize, stride, padding, dilation, True)
+    out_coords = SparseConv3dFunction._get_output_coords(coords, shape, ksize, stride, padding, dilation)
+    neighbor_cache = SparseConv3dFunction._compute_neighbor_cache(coords, out_coords, shape, ksize, stride, padding, dilation, True)
     grad_output_ = torch.empty_like(grad_output)
-    grad_output_[lexsort(neighbor_cache.out_coords.T)] = grad_output
+    grad_output_[lexsort(out_coords.T)] = grad_output
     return {
         'weight': weight,
         'neighbor_cache': neighbor_cache,
@@ -96,9 +97,10 @@ def egemm_prepare_fn(grad_output: torch.Tensor, coords: torch.Tensor, shape: tor
     
 def igemm_prepare_fn(grad_output: torch.Tensor, coords: torch.Tensor, shape: torch.Size, weight: torch.Tensor, ksize, stride, padding, dilation, **kwargs):
     flex_gemm.ops.spconv.set_algorithm(flex_gemm.ops.spconv.Algorithm.IMPLICIT_GEMM)
-    neighbor_cache = SparseConv3dFunction._compute_neighbor_cache(coords, shape, ksize, stride, padding, dilation, True)
+    out_coords = SparseConv3dFunction._get_output_coords(coords, shape, ksize, stride, padding, dilation)
+    neighbor_cache = SparseConv3dFunction._compute_neighbor_cache(coords, out_coords, shape, ksize, stride, padding, dilation, True)
     grad_output_ = torch.empty_like(grad_output)
-    grad_output_[lexsort(neighbor_cache.out_coords.T)] = grad_output
+    grad_output_[lexsort(out_coords.T)] = grad_output
     return {
         'weight': weight,
         'neighbor_cache': neighbor_cache,
@@ -109,9 +111,10 @@ def igemm_prepare_fn(grad_output: torch.Tensor, coords: torch.Tensor, shape: tor
 
 def igemmk_prepare_fn(grad_output: torch.Tensor, coords: torch.Tensor, shape: torch.Size, weight: torch.Tensor, ksize, stride, padding, dilation, **kwargs):
     flex_gemm.ops.spconv.set_algorithm(flex_gemm.ops.spconv.Algorithm.IMPLICIT_GEMM_SPLITK)
-    neighbor_cache = SparseConv3dFunction._compute_neighbor_cache(coords, shape, ksize, stride, padding, dilation, True)
+    out_coords = SparseConv3dFunction._get_output_coords(coords, shape, ksize, stride, padding, dilation)
+    neighbor_cache = SparseConv3dFunction._compute_neighbor_cache(coords, out_coords, shape, ksize, stride, padding, dilation, True)
     grad_output_ = torch.empty_like(grad_output)
-    grad_output_[lexsort(neighbor_cache.out_coords.T)] = grad_output
+    grad_output_[lexsort(out_coords.T)] = grad_output
     return {
         'weight': weight,
         'neighbor_cache': neighbor_cache,
@@ -122,9 +125,10 @@ def igemmk_prepare_fn(grad_output: torch.Tensor, coords: torch.Tensor, shape: to
 
 def migemm_prepare_fn(grad_output: torch.Tensor, coords: torch.Tensor, shape: torch.Size, weight: torch.Tensor, ksize, stride, padding, dilation, **kwargs):
     flex_gemm.ops.spconv.set_algorithm(flex_gemm.ops.spconv.Algorithm.MASKED_IMPLICIT_GEMM)
-    neighbor_cache = SparseConv3dFunction._compute_neighbor_cache(coords, shape, ksize, stride, padding, dilation, True)
+    out_coords = SparseConv3dFunction._get_output_coords(coords, shape, ksize, stride, padding, dilation)
+    neighbor_cache = SparseConv3dFunction._compute_neighbor_cache(coords, out_coords, shape, ksize, stride, padding, dilation, True)
     grad_output_ = torch.empty_like(grad_output)
-    grad_output_[lexsort(neighbor_cache.out_coords.T)] = grad_output
+    grad_output_[lexsort(out_coords.T)] = grad_output
     return {
         'weight': weight,
         'neighbor_cache': neighbor_cache,
@@ -135,9 +139,10 @@ def migemm_prepare_fn(grad_output: torch.Tensor, coords: torch.Tensor, shape: to
 
 def migemmk_prepare_fn(grad_output: torch.Tensor, coords: torch.Tensor, shape: torch.Size, weight: torch.Tensor, ksize, stride, padding, dilation, **kwargs):
     flex_gemm.ops.spconv.set_algorithm(flex_gemm.ops.spconv.Algorithm.MASKED_IMPLICIT_GEMM_SPLITK)
-    neighbor_cache = SparseConv3dFunction._compute_neighbor_cache(coords, shape, ksize, stride, padding, dilation, True)
+    out_coords = SparseConv3dFunction._get_output_coords(coords, shape, ksize, stride, padding, dilation)
+    neighbor_cache = SparseConv3dFunction._compute_neighbor_cache(coords, out_coords, shape, ksize, stride, padding, dilation, True)
     grad_output_ = torch.empty_like(grad_output)
-    grad_output_[lexsort(neighbor_cache.out_coords.T)] = grad_output
+    grad_output_[lexsort(out_coords.T)] = grad_output
     return {
         'weight': weight,
         'neighbor_cache': neighbor_cache,
@@ -222,7 +227,8 @@ def test_conv_fwd():
         # Benchmark the reference kernel.
         avg_time_ref, memory_ref, C_ref = benchmark_kernel(reference[0], **args, prepare_fn=reference[1])
 
-        neighbor_cache = SparseConv3dFunction._compute_neighbor_cache(coords, shape, K, S, P, D, False)
+        out_coords = SparseConv3dFunction._get_output_coords(coords, shape, K, S, P, D)
+        neighbor_cache = SparseConv3dFunction._compute_neighbor_cache(coords, out_coords, shape, K, S, P, D, False)
         L = (neighbor_cache['neighbor_map']!=0xffffffff).sum()
         total_flops = 4 * L * C * C
 
