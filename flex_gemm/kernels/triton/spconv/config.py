@@ -2,8 +2,8 @@ import triton
 from ..utils import get_autotune_config
 
 
-allow_tf32 = True
-invalid_neigh = 0xffffffff
+allow_tf32 = False
+invalid_neigh = -1
 
 
 autotune_config = get_autotune_config(
