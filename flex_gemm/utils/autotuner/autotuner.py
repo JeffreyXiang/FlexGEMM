@@ -130,6 +130,7 @@ def tilelang_autotune(
     *, 
     configs: dict,
     key_fn: Callable,
+    heuristic_fn: Callable = None,
     # profile arguments
     warmup: int = 25,
     rep: int = 100,
@@ -149,6 +150,8 @@ def tilelang_autotune(
     key_fn : Callable
         A function that takes in the input arguments and returns the key used to cache the tuning results.
         Once the key changes, the autotuning will be rerun.
+    heuristic_fn : Callable
+        A function that takes in the input arguments and returns a dictionary of heuristics to fill in the missing
     warmup : int, optional
         Number of warmup iterations before timing.
     rep : int, optional
@@ -166,6 +169,7 @@ def tilelang_autotune(
             jit_impl=impl,
             configs=configs,
             key_fn=key_fn,
+            heuristic_fn=heuristic_fn,
             warmup=warmup,
             rep=rep,
             timeout=timeout,

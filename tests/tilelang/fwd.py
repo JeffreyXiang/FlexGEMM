@@ -133,9 +133,9 @@ def test_conv_fwd():
         {'RES': 16, 'C': 1024, 'B': 64},
         {'RES': 32, 'C': 1024, 'B': 16},
         {'RES': 64, 'C': 1024, 'B': 4},
-        # {'RES': 128, 'C': 512, 'B': 4},
-        # {'RES': 256, 'C': 256, 'B': 2},
-        # {'RES': 512, 'C': 128, 'B': 1},
+        {'RES': 128, 'C': 512, 'B': 4},
+        {'RES': 256, 'C': 256, 'B': 2},
+        {'RES': 512, 'C': 128, 'B': 1},
         # {'RES': 1024, 'C': 64, 'B': 1},
         # {'RES': 2048, 'C': 32, 'B': 1},
     ]
@@ -143,21 +143,22 @@ def test_conv_fwd():
     test_cases = []
     for config in configs:
         test_cases.append({**config, 'ksize': (3, 3, 3), 'stride': (1, 1, 1), 'padding': (1, 1, 1), 'dilation': (1, 1, 1)})
-        test_cases.append({**config, 'ksize': (2, 2, 2), 'stride': (2, 2, 2), 'padding': (0, 0, 0), 'dilation': (1, 1, 1)})
+        # test_cases.append({**config, 'ksize': (2, 2, 2), 'stride': (2, 2, 2), 'padding': (0, 0, 0), 'dilation': (1, 1, 1)})
     
     # List of custom kernel functions.
     kernel_functions = {
-        'dense': (torch_conv3d_kernel_fn, torch_conv3d_prepare_fn),
-        'spconv': (spconv_kernel_fn, spconv_prepare_fn),
+        # 'dense': (torch_conv3d_kernel_fn, torch_conv3d_prepare_fn),
+        # 'spconv': (spconv_kernel_fn, spconv_prepare_fn),
         # 'egemm': (flex_gemm_kernel_fn, egemm_prepare_fn),
         'igemm': (flex_gemm_kernel_fn, igemm_prepare_fn),
         'igemm_t': (flex_gemm_T_kernel_fn, igemm_prepare_fn),
         # 'igemmk': (flex_gemm_kernel_fn, igemmk_prepare_fn),
-        # 'migemm': (flex_gemm_kernel_fn, migemm_prepare_fn),
+        'migemm': (flex_gemm_kernel_fn, migemm_prepare_fn),
+        'migemm_t': (flex_gemm_T_kernel_fn, migemm_prepare_fn),
         # 'migemmk': (flex_gemm_kernel_fn, migemmk_prepare_fn),
     }
     
-    reference = (flex_gemm_kernel_fn, egemm_prepare_fn)
+    reference = (flex_gemm_kernel_fn, migemmk_prepare_fn)
     
     max_flops = get_device_max_flops(torch.float16)
     
