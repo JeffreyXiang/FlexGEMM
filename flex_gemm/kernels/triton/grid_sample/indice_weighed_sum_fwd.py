@@ -20,7 +20,7 @@ def indice_weighed_sum_fwd_kernel(
     # Tensor dimensions
     LOGN, M, C, V: tl.constexpr,
     # Meta-parameters
-    BM: tl.constexpr,   # Block size for N dimension
+    BM: tl.constexpr,   # Block size for M dimension
     BK: tl.constexpr,   # Block size for C dimension
 ):
     """

@@ -1,3 +1,6 @@
+import os
+import sys
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import numpy as np
@@ -23,7 +26,7 @@ def egemm_prepare_fn(feats: torch.Tensor, coords: torch.Tensor, shape: torch.Siz
         bias = torch.nn.Parameter(torch.randn(C, device=feats.device, dtype=feats.dtype))
         params[f'layer{i}'] = {'weight': weight, 'bias': bias}
 
-    neighbor_cache = SubMConv3dFunction._compute_neighbor_cache(coords, shape, (3, 3, 3), (1, 1, 1))
+    neighbor_cache = SubMConv3dFunction._compute_neighbor_cache(coords, shape, (3, 3, 3), (1, 1, 1), False)
 
     return {
         'params': params,
@@ -45,7 +48,7 @@ def igemm_prepare_fn(feats: torch.Tensor, coords: torch.Tensor, shape: torch.Siz
         bias = torch.nn.Parameter(torch.randn(C, device=feats.device, dtype=feats.dtype))
         params[f'layer{i}'] = {'weight': weight, 'bias': bias}
 
-    neighbor_cache = SubMConv3dFunction._compute_neighbor_cache(coords, shape, (3, 3, 3), (1, 1, 1))
+    neighbor_cache = SubMConv3dFunction._compute_neighbor_cache(coords, shape, (3, 3, 3), (1, 1, 1), False)
 
     return {
         'params': params,
@@ -67,7 +70,7 @@ def igemm_splitk_prepare_fn(feats: torch.Tensor, coords: torch.Tensor, shape: to
         bias = torch.nn.Parameter(torch.randn(C, device=feats.device, dtype=feats.dtype))
         params[f'layer{i}'] = {'weight': weight, 'bias': bias}
 
-    neighbor_cache = SubMConv3dFunction._compute_neighbor_cache(coords, shape, (3, 3, 3), (1, 1, 1))
+    neighbor_cache = SubMConv3dFunction._compute_neighbor_cache(coords, shape, (3, 3, 3), (1, 1, 1), False)
 
     return {
         'params': params,
@@ -89,7 +92,7 @@ def migemm_prepare_fn(feats: torch.Tensor, coords: torch.Tensor, shape: torch.Si
         bias = torch.nn.Parameter(torch.randn(C, device=feats.device, dtype=feats.dtype))
         params[f'layer{i}'] = {'weight': weight, 'bias': bias}
 
-    neighbor_cache = SubMConv3dFunction._compute_neighbor_cache(coords, shape, (3, 3, 3), (1, 1, 1))
+    neighbor_cache = SubMConv3dFunction._compute_neighbor_cache(coords, shape, (3, 3, 3), (1, 1, 1), False)
 
     return {
         'params': params,
@@ -110,7 +113,7 @@ def migemm_splitk_prepare_fn(feats: torch.Tensor, coords: torch.Tensor, shape: t
         bias = torch.nn.Parameter(torch.randn(C, device=feats.device, dtype=feats.dtype))
         params[f'layer{i}'] = {'weight': weight, 'bias': bias}
 
-    neighbor_cache = SubMConv3dFunction._compute_neighbor_cache(coords, shape, (3, 3, 3), (1, 1, 1))
+    neighbor_cache = SubMConv3dFunction._compute_neighbor_cache(coords, shape, (3, 3, 3), (1, 1, 1), False)
 
     return {
         'params': params,
@@ -140,8 +143,8 @@ def test_conv_fwd():
         {'RES': 128, 'C': 512, 'L': 2},
         {'RES': 256, 'C': 256, 'L': 2},
         {'RES': 512, 'C': 128, 'L': 2},
-        {'RES': 1024, 'C': 64, 'L': 2},
-        {'RES': 2048, 'C': 64, 'L': 1},
+        # {'RES': 1024, 'C': 64, 'L': 2},
+        # {'RES': 2048, 'C': 64, 'L': 1},
     ]
     
     # List of custom kernel functions.
@@ -186,7 +189,7 @@ def test_conv_fwd():
                 
     # Print results as a formatted table.
     print("=" * 180)
-    print("Conv Forward Benchmark Results")
+    print("SubMConv Inference Benchmark Results")
     print("=" * 180)
     for m in ['time','memory']:
         print(m.capitalize())

@@ -1,7 +1,7 @@
 import torch
 import flex_gemm
-from flex_gemm.ops.spconv import sparse_submanifold_conv3d
-from tests.spconv_fwd import sphere_coords
+from flex_gemm.ops.spconv import sparse_conv3d
+from utils import sphere_coords
 
 # Sparse voxel shell
 feats, coords, shape = sphere_coords(64, 256, dtype=torch.float16, device='cuda')
@@ -17,9 +17,10 @@ flex_gemm.ops.spconv.set_algorithm(
     flex_gemm.ops.spconv.Algorithm.MASKED_IMPLICIT_GEMM_SPLITK
 )
 
-out_feats, neignbor_cache = sparse_submanifold_conv3d(
+out_feats, neignbor_cache = sparse_conv3d(
     feats, coords, shape,
     weight, bias,
+    padding=(1, 1, 1),
 )
 
 out_feats.sum().backward()

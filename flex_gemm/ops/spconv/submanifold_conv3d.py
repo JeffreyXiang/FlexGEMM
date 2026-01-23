@@ -22,6 +22,14 @@ class SubMConv3dNeighborCache:
         self[f'valid_kernel_{block_size}'] = valid_kernel
         self[f'valid_kernel_seg_{block_size}'] = valid_kernel_seg
         
+    # NOTE:
+    # valid_kernel and valid_kernel_seg are block-size dependent because
+    # Triton kernels use different block-sizes during autotuning.
+    #
+    # We lazily compute and cache them here to:
+    #   1. Avoid recomputation across multiple kernel launches
+    #   2. Support multiple Triton specializations with the same neighbor cache
+        
     def valid_kernel_callback(self, block_size: int) -> torch.Tensor:
         if not hasattr(self, f'valid_kernel_{block_size}'):
             self.compute_kernel_idx(block_size)
@@ -39,7 +47,8 @@ class SubMConv3dFunction(Function):
         coords: torch.Tensor,
         shape: torch.Size,
         kernel_size: Tuple[int, int, int],
-        dilation: Tuple[int, int, int]
+        dilation: Tuple[int, int, int],
+        needs_grad: bool,
     ) -> SubMConv3dNeighborCache:
         assert coords.is_contiguous(), "Coords should be contiguous"
         assert coords.dtype in [torch.int32], "Unsupported coords dtype. Expect int32"
@@ -49,7 +58,7 @@ class SubMConv3dFunction(Function):
 
         if spconv.ALGORITHM in [Algorithm.EXPLICIT_GEMM, Algorithm.IMPLICIT_GEMM, Algorithm.IMPLICIT_GEMM_SPLITK]:
             if coords.is_cuda:
-                neighbor_map = kernels.cuda.hashmap_build_submanifold_conv_neighbour_map_cuda(
+                neighbor_map = kernels.cuda.hashmap_build_submanifold_conv_neighbour_map(
                     hashmap_keys, hashmap_vals, coords,
                     W, H, D,
                     kernel_size[0], kernel_size[1], kernel_size[2],
@@ -63,7 +72,7 @@ class SubMConv3dFunction(Function):
         
         elif spconv.ALGORITHM in [Algorithm.MASKED_IMPLICIT_GEMM, Algorithm.MASKED_IMPLICIT_GEMM_SPLITK]:
             if coords.is_cuda:
-                neighbor_map = kernels.cuda.hashmap_build_submanifold_conv_neighbour_map_cuda(
+                neighbor_map = kernels.cuda.hashmap_build_submanifold_conv_neighbour_map(
                     hashmap_keys, hashmap_vals, coords,
                     W, H, D,
                     kernel_size[0], kernel_size[1], kernel_size[2],
@@ -74,17 +83,25 @@ class SubMConv3dFunction(Function):
             V = kernel_size[0] * kernel_size[1] * kernel_size[2]
             assert V <= 32, "Currently, the max kernel volume is 32 because kernel mask is encoded as uint32"
             
-            gray_code, sorted_idx, valid_signal_i, valid_signal_o, valid_signal_seg = \
-                kernels.cuda.neighbor_map_post_process_for_masked_implicit_gemm_1(neighbor_map)
-            
-            return SubMConv3dNeighborCache(**{
-                'neighbor_map': neighbor_map,
-                'gray_code': gray_code,
-                'sorted_idx': sorted_idx,
-                'valid_signal_seg': valid_signal_seg,
-                'valid_signal_i': valid_signal_i,
-                'valid_signal_o': valid_signal_o,
-            })
+            if needs_grad:
+                gray_code, sorted_idx, valid_signal_i, valid_signal_o, valid_signal_seg = \
+                    kernels.cuda.neighbor_map_post_process_for_masked_implicit_gemm_1(neighbor_map)
+                return SubMConv3dNeighborCache(**{
+                    'neighbor_map': neighbor_map,
+                    'gray_code': gray_code,
+                    'sorted_idx': sorted_idx,
+                    'valid_signal_seg': valid_signal_seg,
+                    'valid_signal_i': valid_signal_i,
+                    'valid_signal_o': valid_signal_o,
+                })
+            else:
+                gray_code, sorted_idx = \
+                    kernels.cuda.neighbor_map_post_process_for_masked_implicit_gemm_1_no_bwd(neighbor_map)
+                return SubMConv3dNeighborCache(**{
+                    'neighbor_map': neighbor_map,
+                    'gray_code': gray_code,
+                    'sorted_idx': sorted_idx,
+                })
                 
         else:
             raise ValueError(f"Unsupported algorithm {spconv.ALGORITHM}")
@@ -312,10 +329,11 @@ class SubMConv3dFunction(Function):
     ) -> Tuple[torch.Tensor, SubMConv3dNeighborCache]:
         Co, Kw, Kh, Kd, Ci = weight.shape
         assert feats.shape[-1] == Ci, f"Input channels ({feats.shape[-1]}) should match weight channels ({Ci})"
+        need_grad = any(ctx.needs_input_grad)
         
         # check if neighbor map is already computed
         if neighbor_cache is None:
-            neighbor_cache = SubMConv3dFunction._compute_neighbor_cache(coords, shape, (Kw, Kh, Kd), dilation)
+            neighbor_cache = SubMConv3dFunction._compute_neighbor_cache(coords, shape, (Kw, Kh, Kd), dilation, need_grad)
             
         # compute output
         output = SubMConv3dFunction._sparse_submanifold_conv_forward(feats, neighbor_cache, weight, bias)
@@ -360,13 +378,14 @@ def sparse_submanifold_conv3d(
         shape (torch.Size): shape of the input tensor in NCWHD order.
         weight (torch.Tensor): [Co, Kw, Kh, Kd, Ci] tensor of weights.
         bias (Optional[torch.Tensor]): [Co] tensor of biases.
-        neighbor_cache (Optional[SubMConv3dNeighborCache]): neighbor cache for forward.
-            if None, will be computed in forward.
+        neighbor_cache (Optional[SubMConv3dNeighborCache]): neighbor cache for this operation.
+            Can be reused for multiple runs using the same coordinates.
+            if None, will be computed on the fly.
         dilation (Tuple[int, int, int]): dilation rate.
 
     Returns:
         Tuple[torch.Tensor, SubMConv3dNeighborCache]:
             - output (torch.Tensor): [N, Co] tensor of output features.
-            - neighbor_cache (SubMConv3dNeighborCache): neighbor cache for backward.
+            - neighbor_cache (SubMConv3dNeighborCache): neighbor cache for this operation.
     """
     return SubMConv3dFunction.apply(feats, coords, shape, neighbor_cache, weight, bias, dilation)
