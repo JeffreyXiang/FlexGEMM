@@ -3,7 +3,7 @@ import math
 from tqdm import tqdm
 import torch
 from flex_gemm.ops.grid_sample import grid_sample_3d_torch, grid_sample_3d
-from utils import sphere_coords, calc_err
+from utils import sphere_coords, calc_err, benchmark_kernel
 
 
 @torch.no_grad()
@@ -22,29 +22,6 @@ def sphere_query_pts(res, device='cuda'):
     ], dim=-1)
     # pts = torch.cat([pts, torch.randn_like(pts)], dim=0)
     return pts
-
-
-def benchmark_kernel(kernel_fn, *args, prepare_fn=None, num_warmup=10, num_iters=100, **kwargs):
-    if prepare_fn is not None:
-        kwargs = prepare_fn(*args, **kwargs)
-        args = tuple()
-    # Warmup iterations.
-    for _ in range(num_warmup):
-        C = kernel_fn(*args, **kwargs)
-    torch.cuda.reset_peak_memory_stats()
-    torch.cuda.synchronize()
-    # Timing iterations.
-    start = time.time()
-    for _ in range(num_iters):
-        C = kernel_fn(*args, **kwargs)
-    torch.cuda.synchronize()
-    elapsed = time.time() - start
-    memory = torch.cuda.max_memory_allocated() / 1024**3
-    avg_time_ms = (elapsed / num_iters) * 1000.0
-    avg_mem_gb = memory
-    if isinstance(C, tuple):
-        C = torch.cat([c.detach().flatten() for c in C if c is not None], dim=0)
-    return avg_time_ms, avg_mem_gb, C
 
 
 @torch.no_grad()

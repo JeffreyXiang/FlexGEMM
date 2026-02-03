@@ -11,6 +11,9 @@ from . import config
     configs=config.autotune_config,
     key=['LOGN', 'Ci', 'Co', 'V', 'allow_tf32'],
 )
+@triton.heuristics({
+    'HAS_BIAS': lambda args: args['bias'] is not None,
+})
 @triton.jit
 def sparse_submanifold_conv_fwd_implicit_gemm_kernel(
     input,
@@ -24,6 +27,7 @@ def sparse_submanifold_conv_fwd_implicit_gemm_kernel(
     B1: tl.constexpr,   # Block size for N dimension
     B2: tl.constexpr,   # Block size for Co dimension
     BK: tl.constexpr,   # Block size for K dimension (V * Ci)
+    HAS_BIAS: tl.constexpr,  # Whether bias is present
     allow_tf32: tl.constexpr,  # Allow TF32 precision for matmuls
 ):
     """
@@ -73,7 +77,7 @@ def sparse_submanifold_conv_fwd_implicit_gemm_kernel(
     c = accumulator.to(input.type.element_ty)
             
     # add bias
-    if bias is not None:
+    if HAS_BIAS:
         bias_block = tl.load(bias + offset_co)
         c += bias_block[None, :]
                 

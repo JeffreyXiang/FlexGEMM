@@ -62,7 +62,9 @@ setup(
                 # Grid sample functions
                 "flex_gemm/kernels/cuda/grid_sample/grid_sample.cu",
                 # Convolution functions
-                "flex_gemm/kernels/cuda/spconv/neighbor_map.cu",
+                "flex_gemm/kernels/cuda/spconv/subm_neighbor_map.cu",
+                "flex_gemm/kernels/cuda/spconv/sparse_neighbor_map.cu",
+                "flex_gemm/kernels/cuda/spconv/migemm_neighmap_pp.cu",
                 # main
                 "flex_gemm/kernels/cuda/ext.cpp",
             ],

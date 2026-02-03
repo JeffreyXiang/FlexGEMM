@@ -1,7 +1,7 @@
 import torch
 
 
-def init_hashmap(spatial_size, hashmap_size, device):
+def init_hashmap(spatial_size, hashmap_size, device, with_values=True):
     N, C, W, H, D = spatial_size
     VOL = N * W * H * D
         
@@ -13,6 +13,7 @@ def init_hashmap(spatial_size, hashmap_size, device):
     else:
         raise ValueError(f"The spatial size is too large to fit in a hashmap. Get volumn {VOL} > 2^64.")
 
-    hashmap_vals = torch.empty((hashmap_size,), dtype=torch.uint32, device=device)
-    
-    return hashmap_keys, hashmap_vals
+    if with_values:
+        hashmap_vals = torch.empty((hashmap_size,), dtype=torch.uint32, device=device)
+        return hashmap_keys, hashmap_vals
+    return hashmap_keys

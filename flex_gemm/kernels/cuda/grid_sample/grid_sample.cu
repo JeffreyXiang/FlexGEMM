@@ -81,7 +81,7 @@ torch::Tensor hashmap_build_grid_sample_3d_nearest_neighbor_map(
     auto neighbor = torch::full({grid.size(0), grid.size(1)}, std::numeric_limits<uint32_t>::max(), torch::dtype(torch::kUInt32).device(hashmap_keys.device()));
 
     // Insert 3D coordinates into the hashmap
-    flex_gemm::hash::hashmap_insert_3d_idx_as_val_cuda(
+    flex_gemm::hash::hashmap_insert_3d_idx_as_val(
         hashmap_keys,
         hashmap_vals,
         coords,
@@ -230,7 +230,7 @@ std::tuple<torch::Tensor, torch::Tensor> hashmap_build_grid_sample_3d_trilinear_
     auto weight = torch::zeros({grid.size(0), grid.size(1), 8}, torch::dtype(torch::kFloat32).device(hashmap_keys.device()));
 
     // Insert 3D coordinates into the hashmap
-    flex_gemm::hash::hashmap_insert_3d_idx_as_val_cuda(
+    flex_gemm::hash::hashmap_insert_3d_idx_as_val(
         hashmap_keys,
         hashmap_vals,
         coords,
