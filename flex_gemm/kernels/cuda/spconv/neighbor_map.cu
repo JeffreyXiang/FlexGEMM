@@ -367,6 +367,7 @@ __global__ void reduce_code_cuda_kernel(
         for (int i = 0; i < iters_warpwise; i++) {
             int cur_len = warpSize >> i;
             buf[threadIdx.x] |= buf[threadIdx.x + cur_len];
+            __syncwarp();
         }
     }
 
