@@ -95,7 +95,7 @@ def sparse_submanifold_conv_fwd_masked_implicit_gemm_kernel(
     # Write back the block of the output matrix with masks.
     out_offset_n = offset_sorted_n
     out_offset_co = block_id_co * B2 + tl.arange(0, B2)
-    out_ptr = output + (out_offset_n[:, None] * Co + out_offset_co[None, :])
+    out_ptr = output + (out_offset_n[:, None].to(tl.int64) * Co + out_offset_co[None, :])
     out_mask = n_mask[:, None] & (out_offset_co[None, :] < Co)
     tl.store(out_ptr, c, mask=out_mask)
 

@@ -86,7 +86,7 @@ def sparse_submanifold_conv_bwd_input_masked_implicit_gemm_kernel(
     # Write back the block of the output matrix with masks.
     grad_input_offset_n = offset_sorted_n
     grad_input_offset_ci = block_id_ci * B2 + tl.arange(0, B2)
-    grad_input_ptr = grad_input + (grad_input_offset_n[:, None] * Ci + grad_input_offset_ci[None, :])
+    grad_input_ptr = grad_input + (grad_input_offset_n[:, None].to(tl.int64) * Ci + grad_input_offset_ci[None, :])
     grad_input_mask = n_mask[:, None] & (grad_input_offset_ci[None, :] < Ci)
     tl.store(grad_input_ptr, c, mask=grad_input_mask)
 

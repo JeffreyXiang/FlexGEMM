@@ -110,7 +110,7 @@ def sparse_conv_fwd_masked_implicit_gemm_splitk_kernel(
     # Write back the block of the output matrix with masks.
     out_offset_m = offset_sorted_m
     out_offset_co = block_id_co * B2 + tl.arange(0, B2)
-    out_ptr = output + block_id_k * M * Co + (out_offset_m[:, None] * Co + out_offset_co[None, :])
+    out_ptr = output + block_id_k * M * Co + (out_offset_m[:, None].to(tl.int64) * Co + out_offset_co[None, :])
     out_mask = m_mask[:, None] & (out_offset_co[None, :] < Co)
     tl.store(out_ptr, accumulator, mask=out_mask)
     
