@@ -6,6 +6,12 @@
 #include "../hash/api.h"
 #include "../hash/hash.cuh"
 
+#if defined(__HIP_PLATFORM_AMD__)
+  #if !defined(__syncwarp)
+    #define __syncwarp(...) __builtin_amdgcn_wave_barrier()
+  #endif
+#endif
+
 
 namespace flex_gemm {
 namespace spconv {
