@@ -1,8 +1,9 @@
+import torch
 import triton
 from ..utils import get_autotune_config
 
 
-allow_tf32 = True
+allow_tf32 = not torch.version.hip
 USE_ON_THE_FLY_WEIGHT_TRANSPOSE = True
 
 
