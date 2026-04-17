@@ -82,9 +82,9 @@ def _hashmap_build_neighbour_map_vectorized_kernel(
 
 
 def build_neighbour_map_triton(
-    coords: torch.Tensor,
-    offsets: torch.Tensor,
-    hashmap: torch.Tensor | None = None,
+    coords: Tensor,
+    offsets: Tensor,
+    hashmap: Tensor | None = None,
 ):
     """Build neighbor map given coords and neighbor offsets.
     
@@ -147,11 +147,11 @@ def build_neighbour_map_triton(
 
 
 def build_submanifold_convnd_neighbour_map_triton(
-    coords: torch.Tensor,
+    coords: Tensor,
     kernel_size: tuple[int, ...],
     dilation: tuple[int, ...],
-    hashmap: torch.Tensor | None = None
-) -> torch.Tensor:
+    hashmap: Tensor | None = None
+) -> Tensor:
     """Make neighbor map for N-dimensional submanifold convolution.
     
     Args:
@@ -165,22 +165,23 @@ def build_submanifold_convnd_neighbour_map_triton(
         neighbor_map: (N, K_1 * K_2 * ... * K_D) uint32 tensor, where V is the size of the kernel. Each entry is the index of the neighbor in coords, or -1 if not found.
     """
     assert len(kernel_size) == len(dilation) <= coords.shape[1], f"kernel_size and dilation must have the same length, and cannot be longer than the coordinate dimension. Got {len(kernel_size)} and {len(dilation)} respectively."
-    offsets = torch.tensor(
-        list(itertools.chain(
-            itertools.repeat(0, coords.shape[1] - len(kernel_size)),  # For batch dimensions
-            itertools.product(*[range(-(k // 2) * l, (k // 2 + 1) * l, l) for k, l in zip(kernel_size, dilation)])
-        )), 
-        dtype=torch.int32,
-        device=coords.device
-    )
+    batch_dims = coords.shape[1] - len(kernel_size)
+    spatial_ranges = [
+        range(-(k // 2) * l, (k // 2 + 1) * l, l)
+        for k, l in zip(kernel_size, dilation)
+    ]
+    offsets = torch.tensor(list(itertools.product(*[
+        *itertools.repeat((0,), batch_dims),
+        *spatial_ranges,
+    ])), dtype=torch.int32, device=coords.device)
     return build_neighbour_map_triton(coords, offsets, hashmap)
 
 
 def build_submanifold_conv3d_neighbour_map_triton(
-    coords: torch.Tensor,
+    coords: Tensor,
     kernel_size: int | tuple[int, int, int],
     dilation: int | tuple[int, int, int],
-    hashmap: torch.Tensor | None = None
+    hashmap: Tensor | None = None
 ):
     if isinstance(kernel_size, int):
         kernel_size = (kernel_size,) * 3
@@ -234,8 +235,8 @@ def _mask_gray_binary_kernel(
 
 
 def neighbor_map_post_process_for_masked_implicit_gemm_1(
-    neighbor_map: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    neighbor_map: Tensor,
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
     """
     Post-process the neighbor map for masked implicit GEMM.
 
@@ -271,7 +272,7 @@ def neighbor_map_post_process_for_masked_implicit_gemm_1(
 
     gray_code = torch.empty((N,), dtype=torch.uint32, device=neighbor_map.device)
     binary_code = torch.empty((N,), dtype=torch.uint32, device=neighbor_map.device)
-    BLOCK_N = 256
+    BLOCK_N = 64
     BLOCK_V = 32
     grid = (triton.cdiv(N, BLOCK_N),)
     _mask_gray_binary_kernel[grid](
@@ -285,7 +286,7 @@ def neighbor_map_post_process_for_masked_implicit_gemm_1(
         BLOCK_V=BLOCK_V,
     )
     
-    sorted_idx = torch.argsort(binary_code)
+    sorted_idx = torch.argsort(binary_code.to(torch.int32))
 
     neighbor_map_T = neighbor_map.transpose(0, 1).contiguous()
     neighbor_mask_T = neighbor_mask.transpose(0, 1).contiguous()
@@ -294,9 +295,9 @@ def neighbor_map_post_process_for_masked_implicit_gemm_1(
     mask_flat_indices = torch.where(neighbor_mask_flat)[0]
 
     valid_signal_i = neighbor_map_T.reshape(-1).index_select(0, mask_flat_indices)
-    valid_signal_o = torch.remainder(mask_flat_indices, N).to(torch.uint32)
-    valid_signal_seg = torch.empty((V + 1,), dtype=torch.uint32, device=neighbor_map.device)
+    valid_signal_o = torch.remainder(mask_flat_indices, N).to(torch.int32)
+    valid_signal_seg = torch.empty((V + 1,), dtype=torch.int32, device=neighbor_map.device)
     valid_signal_seg[0] = 0
-    neighbor_mask_T.sum(dim=1, dtype=torch.uint32).cumsum(dim=0, out=valid_signal_seg[1:])
+    torch.cumsum(neighbor_mask_T.sum(dim=1, dtype=torch.int32), dim=0, out=valid_signal_seg[1:])
 
-    return gray_code, sorted_idx, valid_signal_i, valid_signal_o, valid_signal_seg
+    return gray_code.to(torch.int32), sorted_idx, valid_signal_i.to(torch.uint32), valid_signal_o.to(torch.uint32), valid_signal_seg.to(torch.uint32)

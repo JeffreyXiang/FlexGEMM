@@ -49,6 +49,7 @@ setup(
         "flex_gemm.kernels",
         "flex_gemm.kernels.triton",
         "flex_gemm.kernels.triton.spconv",
+        "flex_gemm.kernels.triton.hashmap",
         "flex_gemm.kernels.triton.grid_sample",
     ],
     ext_modules=[
