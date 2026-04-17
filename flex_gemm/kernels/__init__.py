@@ -1,2 +1,2 @@
-from . import triton
-from . import cuda
+from .triton import *
+# from .cuda import *

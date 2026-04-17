@@ -1,4 +1,6 @@
+import itertools
 from typing import Optional, Tuple
+from numbers import Number
 import torch
 from torch import Tensor
 
@@ -13,9 +15,10 @@ __all__ = [
 
 
 @triton.jit
-def _hash_multidim_32bit(ptr, dim, mask):
+def _vec_load_hash_32bit(ptr: tl.pointer_type, D: tl.constexpr, mask: tl.tensor) -> tl.tensor:
+    "Compute a 32-bit hash value given a pointer to the vector key."
     hash_val = tl.load(ptr, mask=mask, other=0)
-    for i in range(1, dim):
+    for i in range(1, D):
         k = tl.load(ptr + i, mask=mask, other=0)
         hash_val = (hash_val * 31) ^ k
     hash_val ^= hash_val >> 17
@@ -24,30 +27,80 @@ def _hash_multidim_32bit(ptr, dim, mask):
 
 
 @triton.jit
+def _vec_load(ptr: tl.pointer_type, mask: tl.tensor, D: tl.constexpr) -> tl.tensor:
+    "Load a vector key from memory given a pointer."
+    vec = tl.load(tl.expand_dims(ptr, -1) + tl.arange(0, D), mask=tl.expand_dims(mask, -1), other=0)
+    return vec
+
+
+@triton.jit
+def _vec_hash_32bit_loop_slice(vec: tl.tensor, D: tl.constexpr) -> tl.tensor:
+    # Legacy loop-based hash; kept for reference.
+    arange = tl.arange(0, D)[None, :]
+    hash_val = tl.sum(tl.where(0 == arange, vec, 0), axis=1)
+    for i in range(1, D):
+        k = tl.sum(tl.where(i == arange, vec, 0), axis=1)
+        hash_val = (hash_val * 31) ^ k
+    hash_val ^= hash_val >> 17
+    hash_val *= 0x1b873593
+    return hash_val
+
+
+@triton.jit
+def _vec_hash_32bit(vec: tl.tensor, D: tl.constexpr) -> tl.tensor:
+    # Per-index salts and multipliers make linear collisions harder.
+    idx = tl.arange(0, D)
+    seed = idx.to(tl.uint32) + 0x9E3779B9
+    seed = (seed ^ (seed >> 16)) * 0x7FEB352D
+    seed = (seed ^ (seed >> 15)) * 0x846CA68B
+    seed = seed ^ (seed >> 16)
+    mult1 = seed | 1
+    mult2 = (seed * 0x27D4EB2D) | 1
+
+    v = vec.to(tl.uint32)
+    v = v + seed
+    v = (v ^ (v >> 16)) * 0x7FEB352D
+    v = (v ^ (v >> 15)) * 0x846CA68B
+    v = v ^ (v >> 16)
+
+    acc1 = tl.sum(v * mult1, axis=-1)
+    acc2 = tl.sum(v * mult2, axis=-1)
+    h = acc1 ^ ((acc2 << 16) | (acc2 >> 16))
+
+    h ^= h >> 16
+    h *= 0x7FEB352D
+    h ^= h >> 15
+    h *= 0x846CA68B
+    h ^= h >> 16
+    return h.to(tl.int32)
+
+
+@triton.jit
 def _hashmap_build_kernel_32bit(
-    keys_ptr,  
-    hashmap_ptr, 
-    hashmap_size,
-    n_elements,
-    dim,
+    hashmap_ptr: tl.pointer_type, 
+    hashmap_size: int,
+    keys_ptr: tl.pointer_type,
+    n_keys: int,
+    D: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
     pid = tl.program_id(0)
     idx = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    mask = idx < n_elements   
+    mask = idx < n_keys   
 
     slot_bit_mask = tl.cast(hashmap_size - 1, tl.int32)
     tag_bit_mask = (~slot_bit_mask) & 0x7FFF_FFFF
 
     # Compute hash value
-    hash_val = _hash_multidim_32bit(keys_ptr + idx * dim, dim, mask)
+    # Load key vectors once, then hash from registers.
+    key_vec = _vec_load(keys_ptr + idx * D, mask=mask, D=D)
+    hash_val = _vec_hash_32bit(key_vec, D=D)
     # Upper tag bits, lower index bits. (index must be smaller than hashmap_size)
     store_val = (hash_val & tag_bit_mask) | idx
 
     # Probing loop
     to_be_inserted = mask
     target_slot = hash_val & slot_bit_mask
-    
     while tl.sum(to_be_inserted) > 0:
         # Try to insert the key index into the hash table
         prev = tl.atomic_cas(hashmap_ptr + target_slot, tl.where(to_be_inserted, -1, -2), store_val)
@@ -58,6 +111,57 @@ def _hashmap_build_kernel_32bit(
         target_slot += tl.where(to_be_inserted, 1, 0)
         target_slot &= slot_bit_mask
 
+
+@triton.jit
+def _hashmap_lookup_inline_32bit(
+    hashmap_ptr: tl.pointer_type,
+    hashmap_size: int,
+    keys_ptr: tl.pointer_type,
+    query_vec: tl.tensor,   
+    mask: tl.tensor,
+    D: tl.constexpr
+):
+    """Lookup the query_vec in the hash map and return the found index or -1 if not found.
+    NOTE: This is an inline function meant to be called within other kernels, not a standalone kernel.
+    """
+    slot_bit_mask = tl.cast(hashmap_size - 1, tl.int32)
+    tag_bit_mask = (~slot_bit_mask) & 0x7FFF_FFFF
+
+    hash_val = _vec_hash_32bit(query_vec, D=D)
+    query_tag = hash_val & tag_bit_mask
+
+    is_active = tl.broadcast_to(mask, query_vec.shape[:-1])
+    found_idx = tl.full(query_vec.shape[:-1], -1, tl.int32)
+
+    # Probing loop
+    curr_slot = hash_val & slot_bit_mask
+    while tl.sum(is_active) > 0:
+        # Compute current slot to probe
+        stored_val = tl.load(hashmap_ptr + curr_slot, mask=is_active, other=-1)
+
+        # Drop queries that hit empty slots
+        is_active = is_active & (stored_val >= 0)
+        
+        # Extract stored index & tag
+        stored_idx = stored_val & slot_bit_mask
+        stored_tag = stored_val & tag_bit_mask
+        # First compare tags
+        is_match = is_active & (stored_tag == query_tag)
+        key_base_ptr = keys_ptr + stored_idx * D
+        # Then compare full keys
+        key_vec = _vec_load(key_base_ptr, mask=is_match, D=D)
+        is_match = is_match & (tl.min(tl.cast(key_vec == query_vec, tl.int32), axis=-1) > 0)
+
+        # Update found indices
+        success = is_match & is_active
+        found_idx = tl.where(success, stored_idx, found_idx)
+        is_active = is_active & (~success)
+        
+        # Update current slot
+        curr_slot += 1
+        curr_slot &= slot_bit_mask
+    return found_idx
+    
 
 @triton.jit
 def _hashmap_lookup_kernel_32bit(
@@ -67,173 +171,56 @@ def _hashmap_lookup_kernel_32bit(
     results_ptr,       
     hashmap_size,
     n_queries,
-    dim,
+    D: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
     pid = tl.program_id(0)
     offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = offs < n_queries
 
-    slot_bit_mask = tl.cast(hashmap_size - 1, tl.int32)
-    tag_bit_mask = (~slot_bit_mask) & 0x7FFF_FFFF
-
     # Compute hash value for queries
-    query_base_ptr = queries_ptr + offs * dim
-    hash_val = _hash_multidim_32bit(query_base_ptr, dim, mask)
-    query_tag = hash_val & tag_bit_mask
-
-    is_active = mask
-    found_idx = tl.full((BLOCK_SIZE,), -1, tl.int32)
-
-    # Probing loop
-    curr_slot = hash_val & slot_bit_mask
-    while tl.sum(is_active) > 0:
-        # Compute current slot to probe
-        stored_val = tl.load(hashmap_ptr + curr_slot, mask=is_active, other=-1)
-
-        # Drop queries that hit empty slots
-        is_active = is_active & (stored_val >= 0)
-        
-        # Extract stored index & tag
-        stored_idx = stored_val & slot_bit_mask
-        stored_tag = stored_val & tag_bit_mask
-        # First compare tags
-        is_match = is_active & (stored_tag == query_tag)
-        key_base_ptr = keys_ptr + stored_idx * dim
-        # Then compare full keys
-        for i in range(dim):
-            q = tl.load(query_base_ptr + i, mask=is_match, other=0)
-            k = tl.load(key_base_ptr + i, mask=is_match, other=0)
-            is_match = is_match & (q == k)
-    
-        # Update found indices
-        success = is_match & is_active
-        found_idx = tl.where(success, stored_idx, found_idx)
-        is_active = is_active & (~success)
-        
-        # Update current slot
-        curr_slot += 1
-        curr_slot &= slot_bit_mask
+    query_vec = _vec_load(queries_ptr + offs * D, mask=mask, D=D)
+    found_idx = _hashmap_lookup_inline_32bit(
+        hashmap_ptr, hashmap_size, 
+        keys_ptr, query_vec, 
+        mask=mask, 
+        D=D
+    )
 
     # Store results
     tl.store(results_ptr + offs, found_idx, mask=mask)
 
 
-
-@triton.jit
-def _hash_multidim_64bit(ptr, dim, mask):
-    hash_val = tl.load(ptr, mask=mask, other=0)
-    for i in range(1, dim):
-        k = tl.load(ptr + i, mask=mask, other=0)
-        hash_val = (hash_val * 31) ^ k
-    hash_val ^= hash_val >> 33
-    hash_val *= 0x100000001B3 
-    return hash_val
-
-
-@triton.jit
-def _hashmap_build_kernel_64bit(
-    keys_ptr,    
-    hashmap_ptr, 
-    hashmap_size,
-    n_elements,
-    dim,
-    BLOCK_SIZE: tl.constexpr,
-):
-    pid = tl.program_id(0)
-    idx = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE).to(tl.int64)
-    mask = idx < n_elements   
-
-    slot_bit_mask = tl.cast(hashmap_size - 1, tl.int64)
-    tag_bit_mask = (~slot_bit_mask) & 0x7FFF_FFFF_FFFF_FFFF
-
-    # Compute hash value
-    hash_val = _hash_multidim_64bit(keys_ptr + idx * dim, dim, mask)
-    # Upper tag bits, lower index bits. (index must be smaller than hashmap_size)
-    store_val = (hash_val & tag_bit_mask) | idx
-
-    # Probing loop
-    to_be_inserted = mask
-    target_slot = hash_val & slot_bit_mask
-    while tl.sum(to_be_inserted) > 0:
-        # Try to insert the key index into the hash table
-        prev = tl.atomic_cas(hashmap_ptr + target_slot, tl.where(to_be_inserted, -1, -2), store_val)
-        # Update mask: keep only those that failed to insert
-        to_be_inserted = to_be_inserted & (prev >= 0)
-
-        # Update target_slot for next attempt
-        target_slot += tl.where(to_be_inserted, 1, 0)
-        target_slot &= slot_bit_mask
-
-
-@triton.jit
-def _hashmap_lookup_kernel_64bit(
-    queries_ptr,   
-    keys_ptr,       
-    hashmap_ptr,    
-    results_ptr,       
-    hashmap_size,
-    n_queries,
-    dim,
-    BLOCK_SIZE: tl.constexpr,
-):
-    pid = tl.program_id(0)
-    offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    mask = offs < n_queries
-
-    slot_bit_mask = tl.cast(hashmap_size - 1, tl.int64)
-    tag_bit_mask = (~slot_bit_mask) & 0x7FFF_FFFF_FFFF_FFFF
-
-    # Compute hash value for queries
-    query_base_ptr = queries_ptr + offs * dim
-    hash_val = _hash_multidim_64bit(query_base_ptr, dim, mask)
-    query_tag = hash_val & tag_bit_mask
-
-    is_active = mask
-    found_idx = tl.full((BLOCK_SIZE,), -1, tl.int64)
-
-    # Probing loop
-    curr_slot = hash_val & slot_bit_mask
-    while tl.sum(is_active) > 0:
-        # Compute current slot to probe
-        stored_val = tl.load(hashmap_ptr + curr_slot, mask=is_active, other=-1)
-
-        # Drop queries that hit empty slots
-        is_active = is_active & (stored_val >= 0)
-        
-        # Extract stored index & tag
-        stored_idx = stored_val & slot_bit_mask
-        stored_tag = stored_val & tag_bit_mask
-        # First compare tags
-        is_match = is_active & (stored_tag == query_tag)
-        key_base_ptr = keys_ptr + stored_idx * dim
-        # Then compare full keys
-        for i in range(dim):
-            q = tl.load(query_base_ptr + i, mask=is_match, other=0)
-            k = tl.load(key_base_ptr + i, mask=is_match, other=0)
-            is_match = is_match & (q == k)
+def pad_to_size_along_dim(x: Tensor, dim: int | tuple[int, ...], size: int | tuple[int, ...], value: Number = 0.) -> Tensor:
+    "Pad the specified dimension of the tensor to the next power of two with zeros."
+    if isinstance(dim, int):
+        dim = (dim,)
+    if isinstance(size, int):
+        size = (size,)
+    if len(dim) == 1 and len(size) > 1:
+        size = size * len(dim)
+    if len(dim) > 1 and len(size) == 1:
+        size = size * len(dim)
+    assert len(dim) == len(size), f"dim and size must have the same length. Got {len(dim)} and {len(size)} respectively."
     
-        # Update found indices
-        success = is_match & is_active
-        found_idx = tl.where(success, stored_idx, found_idx)
-        is_active = is_active & (~success)
-        
-        # Update current slot
-        curr_slot += 1
-        curr_slot &= slot_bit_mask
+    pad_size = [0] * x.dim()
+    for d, s in zip(dim, size):
+        pad_size[d] = max(0, s - x.shape[d])
+    if any(p > 0 for p in pad_size):
+        x = torch.nn.functional.pad(
+            x, 
+            tuple(itertools.chain.from_iterable((0, p) for p in reversed(pad_size))), 
+            value=value
+        )
+    return x
 
-    # Store results
-    tl.store(results_ptr + offs, found_idx, mask=mask)
 
-
-def hashmap_build_triton(keys: Tensor, dtype: Optional[torch.dtype] = None) -> Tensor:
+def hashmap_build_triton(keys: Tensor) -> Tensor:
     """
     Build a hash map from the given keys using Triton.
     
     Args:
         keys (Tensor): A tensor of shape `(n_keys, *key_dims)` representing the keys.
-        dtype (Optional[torch.dtype]): The desired data type for the hash map indices. 
-            If None, automatically selects between `torch.int32` and `torch.int64` based on the size of the hash map.
 
     Returns:
         Tensor: A 1D tensor representing the hash map.
@@ -249,32 +236,25 @@ def hashmap_build_triton(keys: Tensor, dtype: Optional[torch.dtype] = None) -> T
 
     # Determine hash map size (next power of two greater than 2x number of elements)
     n_keys = keys.shape[0]
-    hashmap_size = 1 << ((n_keys - 1).bit_length() + 1)
+    hashmap_size = triton.next_power_of_2(n_keys * 2)
 
-    # Select 32-bit or 64-bit hash map based on size
-    if dtype is None:
-        dtype = torch.int32 if hashmap_size < (1 << 28) else torch.int64
-
-    # Convert keys and queries to appropriate dtype. Pad if necessary.
-    bytes_alignment = 4 if dtype == torch.int32 else 8
-    pad_size = (bytes_alignment - (keys.shape[1] % bytes_alignment)) % bytes_alignment
-    if pad_size > 0:
-        keys = torch.nn.functional.pad(keys, (0, pad_size), value=0)
-    keys = keys.view(dtype)
+    # Pad keys to next power of two by int32 (4 bytes) for efficient hashing and memory access.
+    keys = pad_to_size_along_dim(keys, dim=1, size=triton.next_power_of_2(triton.cdiv(keys.shape[1], 4)) * 4, value=0)
+    keys = keys.view(torch.int32)
 
     dim = keys.shape[1]
-    hashmap = torch.full((hashmap_size,), -1, dtype=dtype, device=keys.device)
+
+    hashmap = torch.full((hashmap_size,), -1, dtype=torch.int32, device=keys.device)
     
     BLOCK_SIZE = 64
-    grid = ((n_keys + BLOCK_SIZE - 1) // BLOCK_SIZE, )
+    grid = (triton.cdiv(n_keys, BLOCK_SIZE), )
     
-    hashmap_build_kernel = _hashmap_build_kernel_32bit if dtype == torch.int32 else _hashmap_build_kernel_64bit
-    hashmap_build_kernel[grid](
-        keys_ptr=keys,
+    _hashmap_build_kernel_32bit[grid](
         hashmap_ptr=hashmap,
         hashmap_size=hashmap_size,
-        n_elements=n_keys,
-        dim=dim,
+        keys_ptr=keys,
+        n_keys=n_keys,
+        D=keys.shape[1],
         BLOCK_SIZE=BLOCK_SIZE,
     )
 
@@ -304,38 +284,26 @@ def hashmap_lookup_triton(hashmap: Tensor, keys: Tensor, queries: Tensor) -> Ten
     queries = queries.flatten(1).contiguous().view(torch.uint8)
 
     n_queries = queries.shape[0]
-
     hashmap_size = hashmap.shape[0]
-    dtype = hashmap.dtype
-
-    # Select 32-bit or 64-bit kernel based on dtype
-    if dtype == torch.int32:
-        hashmap_lookup_kernel = _hashmap_lookup_kernel_32bit
-    elif dtype == torch.int64:
-        hashmap_lookup_kernel = _hashmap_lookup_kernel_64bit
 
     # Pad and convert keys and queries to appropriate dtype.
-    bytes_alignment = 4 if dtype == torch.int32 else 8
-    pad_size = (bytes_alignment - (keys.shape[1] % bytes_alignment)) % bytes_alignment
-    if pad_size > 0:
-        keys = torch.nn.functional.pad(keys, (0, pad_size), value=0)
-        queries = torch.nn.functional.pad(queries, (0, pad_size), value=0)
-    keys = keys.view(dtype)
-    queries = queries.view(dtype)
+    keys = pad_to_size_along_dim(keys, dim=1, size=triton.next_power_of_2(triton.cdiv(keys.shape[1], 4)) * 4, value=0)
+    queries = pad_to_size_along_dim(queries, dim=1, size=triton.next_power_of_2(triton.cdiv(queries.shape[1], 4)) * 4, value=0)
+    keys = keys.view(torch.int32)
+    queries = queries.view(torch.int32)
 
-    dim = keys.shape[1]
-    results = torch.full((n_queries,), -1, dtype=dtype, device=keys.device)
+    results = torch.full((n_queries,), -1, dtype=torch.int32, device=keys.device)
     
     BLOCK_SIZE = 64
     grid = ((n_queries + BLOCK_SIZE - 1) // BLOCK_SIZE, )
-    hashmap_lookup_kernel[grid](
+    _hashmap_lookup_kernel_32bit[grid](
         queries_ptr=queries,
         keys_ptr=keys,
         hashmap_ptr=hashmap,
         results_ptr=results,
         hashmap_size=hashmap_size,
         n_queries=n_queries,
-        dim=dim,
+        D=keys.shape[1],
         BLOCK_SIZE=BLOCK_SIZE,
     )
 
@@ -366,52 +334,37 @@ def hashmap_build_lookup_triton(keys: Tensor, queries: Tensor) -> Tensor:
     n_queries = queries.shape[0]
 
     # Determine hash map size (next power of two greater than 2x number of elements)
-    hashmap_size = 1 << ((n_keys - 1).bit_length() + 1)
+    hashmap_size = triton.next_power_of_2(n_keys * 2)
 
-    # Select 32-bit or 64-bit hash map based on size
-    if hashmap_size < (1 << 28):
-        dtype = torch.int32
-        hashmap_build_kernel = _hashmap_build_kernel_32bit
-        hashmap_lookup_kernel = _hashmap_lookup_kernel_32bit
-    else:
-        dtype = torch.int64
-        hashmap_build_kernel = _hashmap_build_kernel_64bit
-        hashmap_lookup_kernel = _hashmap_lookup_kernel_64bit
+    # Pad keys and queries to next power of two by int32 (4 bytes) for efficient hashing and memory access.
+    keys = pad_to_size_along_dim(keys, dim=1, size=triton.next_power_of_2(triton.cdiv(keys.shape[1], 4)) * 4, value=0)
+    queries = pad_to_size_along_dim(queries, dim=1, size=triton.next_power_of_2(triton.cdiv(queries.shape[1], 4)) * 4, value=0)
+    keys = keys.view(torch.int32)
+    queries = queries.view(torch.int32)
 
-    # Convert keys and queries to appropriate dtype. Pad if necessary.
-    bytes_alignment = 4 if dtype == torch.int32 else 8
-    pad_size = (bytes_alignment - (keys.shape[1] % bytes_alignment)) % bytes_alignment
-    if pad_size > 0:
-        keys = torch.nn.functional.pad(keys, (0, pad_size), value=0)
-        queries = torch.nn.functional.pad(queries, (0, pad_size), value=0)
-    keys = keys.view(dtype)
-    queries = queries.view(dtype)
-
-    dim = keys.shape[1]
-    hashmap = torch.full((hashmap_size,), -1, dtype=dtype, device=keys.device)
-    results = torch.full((n_queries,), -1, dtype=dtype, device=keys.device)
+    hashmap = torch.full((hashmap_size,), -1, dtype=torch.int32, device=keys.device)
+    results = torch.full((n_queries,), -1, dtype=torch.int32, device=keys.device)
     
     BLOCK_SIZE = 64
-    grid = ((n_keys + BLOCK_SIZE - 1) // BLOCK_SIZE, )
+    grid = (triton.cdiv(n_keys, BLOCK_SIZE), )
     
-    hashmap_build_kernel[grid](
+    _hashmap_build_kernel_32bit[grid](
         keys_ptr=keys,
         hashmap_ptr=hashmap,
         hashmap_size=hashmap_size,
-        n_elements=n_keys,
-        dim=dim,
+        n_keys=n_keys,
+        D=keys.shape[1],
         BLOCK_SIZE=BLOCK_SIZE,
     )
-    
-    grid = ((n_queries + BLOCK_SIZE - 1) // BLOCK_SIZE, )
-    hashmap_lookup_kernel[grid](
+    grid = (triton.cdiv(n_queries, BLOCK_SIZE), )
+    _hashmap_lookup_kernel_32bit[grid](
         queries_ptr=queries,
         keys_ptr=keys,
         hashmap_ptr=hashmap,
         results_ptr=results,
         hashmap_size=hashmap_size,
         n_queries=n_queries,
-        dim=dim,
+        D=keys.shape[1],
         BLOCK_SIZE=BLOCK_SIZE,
     )
 

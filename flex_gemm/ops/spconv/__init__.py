@@ -9,6 +9,7 @@ class Algorithm:
 
 ALGORITHM = Algorithm.MASKED_IMPLICIT_GEMM_SPLITK  # Default algorithm
 HASHMAP_RATIO = 2.0         # Ratio of hashmap size to input size
+USE_TRITON_NEIGHBOR_MAP = True  # Use Triton implementation for neighbor_map (can switch to CUDA for verification)
 
 
 def set_algorithm(algorithm: Algorithm):
@@ -19,6 +20,12 @@ def set_algorithm(algorithm: Algorithm):
 def set_hashmap_ratio(ratio: float):
     global HASHMAP_RATIO
     HASHMAP_RATIO = ratio
+
+
+def set_use_triton_neighbor_map(use_triton: bool):
+    """Switch between Triton and CUDA neighbor_map implementations for verification."""
+    global USE_TRITON_NEIGHBOR_MAP
+    USE_TRITON_NEIGHBOR_MAP = use_triton
 
 
 from .submanifold_conv3d import SubMConv3dFunction, sparse_submanifold_conv3d
