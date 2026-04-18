@@ -4,9 +4,11 @@ import os
 import pytest
 import torch
 
-from flex_gemm.kernels.triton.spconv.neighbor_map import (
-    build_submanifold_conv3d_neighbour_map_triton,
+from flex_gemm.kernels.triton.neighbor_map import (
+    build_neighbor_map_triton,
 )
+from flex_gemm.ops.utils import make_conv_neighbor_offsets
+from utils import sphere_coords
 
 
 def _time_cuda_ms(fn, warmup: int = 20, iters: int = 100) -> float:
@@ -69,14 +71,14 @@ def test_build_submanifold_conv3d_neighbour_map_matches_reference() -> None:
     )
     coords = grid.reshape(-1, 3).to(torch.int32)
 
-    kernel_size = 3
-    dilation = 1
-    out = build_submanifold_conv3d_neighbour_map_triton(
-        coords, kernel_size, dilation
+    kernel_size = (3, 3, 3)
+    dilation = (1, 1, 1)
+    out = build_neighbor_map_triton(
+        coords, make_conv_neighbor_offsets(kernel_size, dilation, dtype=torch.int32, device=device)
     )
 
     expected = _reference_neighbor_map(
-        coords, (kernel_size,) * 3, (dilation,) * 3
+        coords, kernel_size, dilation
     )
 
     assert out.shape == (coords.shape[0], 27)
@@ -102,18 +104,18 @@ def test_neighbor_map_triton_dense_speed_benchmark() -> None:
     coords = grid.reshape(-1, 3).to(torch.int32).contiguous()
     n_coords = coords.shape[0]
 
-    kernel_size = 3
-    dilation = 1
+    kernel_size = (3, 3, 3)
+    dilation = (1, 1, 1)
     build_ms = _time_cuda_ms(
-        lambda: build_submanifold_conv3d_neighbour_map_triton(
-            coords, kernel_size, dilation
+        lambda: build_neighbor_map_triton(
+            coords, make_conv_neighbor_offsets(kernel_size, dilation, dtype=torch.int32, device=device)
         ),
         warmup=10,
         iters=50,
     )
 
-    out = build_submanifold_conv3d_neighbour_map_triton(
-        coords, kernel_size, dilation
+    out = build_neighbor_map_triton(
+        coords, make_conv_neighbor_offsets(kernel_size, dilation, dtype=torch.int32, device=device)
     )
     assert out.shape == (n_coords, 27)
 
@@ -142,18 +144,48 @@ def test_neighbor_map_triton_shuffled_speed_benchmark() -> None:
     coords = coords.index_select(0, torch.randperm(coords.shape[0], device=device)) # Randomly select half of the coordinates to create sparsity
     n_coords = coords.shape[0]
 
-    kernel_size = 3
-    dilation = 1
+    kernel_size = (3, 3, 3)
+    dilation = (1, 1, 1)
     build_ms = _time_cuda_ms(
-        lambda: build_submanifold_conv3d_neighbour_map_triton(
-            coords, kernel_size, dilation
+        lambda: build_neighbor_map_triton(
+            coords, make_conv_neighbor_offsets(kernel_size, dilation, dtype=torch.int32, device=device)
         ),
         warmup=10,
         iters=50,
     )
 
-    out = build_submanifold_conv3d_neighbour_map_triton(
-        coords, kernel_size, dilation
+    out = build_neighbor_map_triton(
+        coords, make_conv_neighbor_offsets(kernel_size, dilation, dtype=torch.int32, device=device)
+    )
+    assert out.shape == (n_coords, 27)
+
+    neighbor_qps = (n_coords * 27) / (build_ms * 1e-3)
+    print(
+        f"\n[neighbor_map benchmark] n_coords={n_coords}, kernel={kernel_size}, "
+        f"dilation={dilation}, build={build_ms:.3f} ms, neighbor_qps={neighbor_qps:,.0f}/s"
+    )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for Triton kernels")
+@pytest.mark.skipif(os.getenv("RUN_BENCHMARKS") != "1", reason="Set RUN_BENCHMARKS=1 to run benchmark tests")
+def test_neighbor_map_triton_sparse_speed_benchmark() -> None:
+    device = torch.device("cuda")
+    res = 512
+    _, coords, _ = sphere_coords(res, 16, dtype=torch.float16)
+    n_coords = coords.shape[0]
+
+    kernel_size = (3, 3, 3)
+    dilation = (1, 1, 1)
+    build_ms = _time_cuda_ms(
+        lambda: build_neighbor_map_triton(
+            coords, make_conv_neighbor_offsets(kernel_size, dilation, batch_dims=coords.shape[1] - 3, dtype=coords.dtype, device=device)
+        ),
+        warmup=10,
+        iters=50,
+    )
+
+    out = build_neighbor_map_triton(
+        coords, make_conv_neighbor_offsets(kernel_size, dilation, batch_dims=coords.shape[1] - 3, dtype=coords.dtype, device=device)
     )
     assert out.shape == (n_coords, 27)
 
