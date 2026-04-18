@@ -1,3 +1,4 @@
+import os
 import pytest
 import torch
 
@@ -22,6 +23,21 @@ def _assert_tensor_equal(lhs: torch.Tensor, rhs: torch.Tensor) -> None:
         rtol=0,
         atol=0,
     )
+
+
+def _time_cuda_ms(fn, warmup: int = 20, iters: int = 100) -> float:
+    for _ in range(warmup):
+        fn()
+    torch.cuda.synchronize()
+
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+    start.record()
+    for _ in range(iters):
+        fn()
+    end.record()
+    torch.cuda.synchronize()
+    return start.elapsed_time(end) / iters
 
 
 def _compute_neighbor_cache(
@@ -121,3 +137,94 @@ def test_triton_neighbor_cache_matches_cuda(algorithm) -> None:
             cache_cuda.valid_kernel_seg_callback(block_size),
         )
         print("[triton vs cuda] algo={algorithm} neighbor_map and callbacks match")
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for Triton kernels")
+def test_triton_neighbor_map_post_process_2_matches_cuda() -> None:
+    has_cuda_ext = (
+        hasattr(kernels, "cuda")
+        and kernels.cuda is not None
+        and hasattr(kernels.cuda, "neighbor_map_post_process_for_masked_implicit_gemm_2")
+    )
+    if not has_cuda_ext:
+        pytest.skip("CUDA extension is required for comparison")
+
+    feats, coords, shape = sphere_coords(32, 16, dtype=torch.float16)
+    weight = torch.empty(16, 3, 3, 3, 16, device=feats.device, dtype=feats.dtype)
+
+    original_algorithm = spconv.ALGORITHM
+    original_use_triton = spconv.USE_TRITON_NEIGHBOR_MAP
+    try:
+        cache_cuda = _compute_neighbor_cache(
+            coords, shape, weight, spconv.Algorithm.MASKED_IMPLICIT_GEMM, use_triton=False
+        )
+    finally:
+        spconv.set_algorithm(original_algorithm)
+        spconv.set_use_triton_neighbor_map(original_use_triton)
+
+    gray_code = cache_cuda["gray_code"]
+    sorted_idx = cache_cuda["sorted_idx"]
+
+    for block_size in (32, 64, 128):
+        # sym:neighbor_map_post_process_for_masked_implicit_gemm_2
+        triton_valid, triton_seg = (
+            kernels.triton.neighbor_map_post_process_for_masked_implicit_gemm_2(
+                gray_code, sorted_idx, block_size
+            )
+        )
+        cuda_valid, cuda_seg = (
+            kernels.cuda.neighbor_map_post_process_for_masked_implicit_gemm_2(
+                gray_code, sorted_idx, block_size
+            )
+        )
+        _assert_tensor_equal(triton_valid, cuda_valid)
+        _assert_tensor_equal(triton_seg, cuda_seg)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for Triton kernels")
+@pytest.mark.skipif(os.getenv("RUN_BENCHMARKS") != "1", reason="Set RUN_BENCHMARKS=1 to run benchmark tests")
+@pytest.mark.parametrize("res,ch,block_size", [(64, 32, 64), (96, 32, 128)])
+def test_triton_neighbor_map_post_process_2_benchmark(res: int, ch: int, block_size: int) -> None:
+    has_cuda_ext = (
+        hasattr(kernels, "cuda")
+        and kernels.cuda is not None
+        and hasattr(kernels.cuda, "neighbor_map_post_process_for_masked_implicit_gemm_2")
+    )
+    if not has_cuda_ext:
+        pytest.skip("CUDA extension is required for comparison")
+
+    feats, coords, shape = sphere_coords(res, ch, dtype=torch.float16)
+    weight = torch.empty(ch, 3, 3, 3, ch, device=feats.device, dtype=feats.dtype)
+
+    original_algorithm = spconv.ALGORITHM
+    original_use_triton = spconv.USE_TRITON_NEIGHBOR_MAP
+    try:
+        cache_cuda = _compute_neighbor_cache(
+            coords, shape, weight, spconv.Algorithm.MASKED_IMPLICIT_GEMM, use_triton=False
+        )
+    finally:
+        spconv.set_algorithm(original_algorithm)
+        spconv.set_use_triton_neighbor_map(original_use_triton)
+
+    gray_code = cache_cuda["gray_code"]
+    sorted_idx = cache_cuda["sorted_idx"]
+
+    triton_ms = _time_cuda_ms(
+        lambda: kernels.triton.neighbor_map_post_process_for_masked_implicit_gemm_2(
+            gray_code, sorted_idx, block_size
+        ),
+        warmup=10,
+        iters=50,
+    )
+    cuda_ms = _time_cuda_ms(
+        lambda: kernels.cuda.neighbor_map_post_process_for_masked_implicit_gemm_2(
+            gray_code, sorted_idx, block_size
+        ),
+        warmup=10,
+        iters=50,
+    )
+
+    print(
+        f"\n[post_process_2 benchmark] res={res}, ch={ch}, block_size={block_size}, "
+        f"triton={triton_ms:.3f} ms, cuda={cuda_ms:.3f} ms"
+    )
