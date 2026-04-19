@@ -74,7 +74,8 @@ def test_build_submanifold_conv3d_neighbour_map_matches_reference() -> None:
     kernel_size = (3, 3, 3)
     dilation = (1, 1, 1)
     out = build_neighbor_map_triton(
-        coords, make_conv_neighbor_offsets(kernel_size, dilation, dtype=torch.int32, device=device)
+        coords, 
+        offsets=make_conv_neighbor_offsets(kernel_size, dilation, dtype=torch.int32, device=device)
     )
 
     expected = _reference_neighbor_map(
@@ -108,14 +109,16 @@ def test_neighbor_map_triton_dense_speed_benchmark() -> None:
     dilation = (1, 1, 1)
     build_ms = _time_cuda_ms(
         lambda: build_neighbor_map_triton(
-            coords, make_conv_neighbor_offsets(kernel_size, dilation, dtype=torch.int32, device=device)
+            coords, 
+            offsets=make_conv_neighbor_offsets(kernel_size, dilation, dtype=torch.int32, device=device)
         ),
         warmup=10,
         iters=50,
     )
 
     out = build_neighbor_map_triton(
-        coords, make_conv_neighbor_offsets(kernel_size, dilation, dtype=torch.int32, device=device)
+        coords, 
+        offsets=make_conv_neighbor_offsets(kernel_size, dilation, dtype=torch.int32, device=device)
     )
     assert out.shape == (n_coords, 27)
 
@@ -148,14 +151,16 @@ def test_neighbor_map_triton_shuffled_speed_benchmark() -> None:
     dilation = (1, 1, 1)
     build_ms = _time_cuda_ms(
         lambda: build_neighbor_map_triton(
-            coords, make_conv_neighbor_offsets(kernel_size, dilation, dtype=torch.int32, device=device)
+            coords, 
+            offsets=make_conv_neighbor_offsets(kernel_size, dilation, dtype=torch.int32, device=device)
         ),
         warmup=10,
         iters=50,
     )
 
     out = build_neighbor_map_triton(
-        coords, make_conv_neighbor_offsets(kernel_size, dilation, dtype=torch.int32, device=device)
+        coords, 
+        offsets=make_conv_neighbor_offsets(kernel_size, dilation, dtype=torch.int32, device=device)
     )
     assert out.shape == (n_coords, 27)
 
@@ -178,14 +183,16 @@ def test_neighbor_map_triton_sparse_speed_benchmark() -> None:
     dilation = (1, 1, 1)
     build_ms = _time_cuda_ms(
         lambda: build_neighbor_map_triton(
-            coords, make_conv_neighbor_offsets(kernel_size, dilation, batch_dims=coords.shape[1] - 3, dtype=coords.dtype, device=device)
+            coords, 
+            offsets=make_conv_neighbor_offsets(kernel_size, dilation, batch_dims=coords.shape[1] - 3, dtype=coords.dtype, device=device)
         ),
         warmup=10,
         iters=50,
     )
 
     out = build_neighbor_map_triton(
-        coords, make_conv_neighbor_offsets(kernel_size, dilation, batch_dims=coords.shape[1] - 3, dtype=coords.dtype, device=device)
+        coords, 
+        offsets=make_conv_neighbor_offsets(kernel_size, dilation, batch_dims=coords.shape[1] - 3, dtype=coords.dtype, device=device)
     )
     assert out.shape == (n_coords, 27)
 

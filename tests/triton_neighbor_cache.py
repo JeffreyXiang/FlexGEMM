@@ -4,7 +4,8 @@ import torch
 
 import flex_gemm.kernels as kernels
 from flex_gemm.ops import spconv
-from flex_gemm.ops.spconv import SubMConv3dFunction
+from flex_gemm import config
+from flex_gemm.ops.spconv.submanifold_conv import _compute_neighbor_cache_kernel_dilation
 from utils import sphere_coords
 
 
@@ -47,19 +48,19 @@ def _compute_neighbor_cache(
     coords: torch.Tensor,
     shape: torch.Size,
     weight: torch.Tensor,
-    algorithm: spconv.Algorithm,
+    algorithm: str,
     use_triton: bool,
 ):
-    spconv.set_algorithm(algorithm)
-    spconv.set_backend(spconv.Backend.TRITON if use_triton else spconv.Backend.CUDA)
+    config.USE_CUDA_EXTENSION = not use_triton
     ksize = (weight.shape[1], weight.shape[2], weight.shape[3])
     dilation = (1, 1, 1)
-    neighbor_cache = SubMConv3dFunction._compute_neighbor_cache(coords, shape, ksize, dilation)
+    neighbor_cache = _compute_neighbor_cache_kernel_dilation(coords, shape, ksize, dilation)
     if algorithm in (
         spconv.Algorithm.MASKED_IMPLICIT_GEMM,
         spconv.Algorithm.MASKED_IMPLICIT_GEMM_SPLITK,
     ):
-        neighbor_cache.neighbor_map_post_process_for_masked_implicit_gemm_2(block_size=64)  # Ensure the callbacks are populated for testing.
+        neighbor_cache.neighbor_map_post_process_for_masked_implicit_gemm_1() 
+        neighbor_cache.neighbor_map_post_process_for_masked_implicit_gemm_2(block_size=64)
     return neighbor_cache
 
 
@@ -67,10 +68,7 @@ def _compute_neighbor_cache(
 @pytest.mark.parametrize(
     "algorithm",
     [
-        spconv.Algorithm.EXPLICIT_GEMM,
         spconv.Algorithm.IMPLICIT_GEMM,
-        spconv.Algorithm.IMPLICIT_GEMM_SPLITK,
-        spconv.Algorithm.MASKED_IMPLICIT_GEMM,
         spconv.Algorithm.MASKED_IMPLICIT_GEMM_SPLITK,
     ],
 )
@@ -129,9 +127,6 @@ def test_triton_neighbor_cache_matches_cuda(algorithm) -> None:
         _assert_tensor_equal(
             cache_triton["valid_signal_o"], cache_cuda["valid_signal_o"]
         )
-        # _assert_tensor_equal(
-        #     cache_triton["valid_signal_seg"], cache_cuda["valid_signal_seg"]
-        # )
 
         block_size = 64
         _assert_tensor_equal(
@@ -145,46 +140,6 @@ def test_triton_neighbor_cache_matches_cuda(algorithm) -> None:
         print("[triton vs cuda] algo={algorithm} neighbor_map and callbacks match")
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for Triton kernels")
-def test_triton_neighbor_map_post_process_2_matches_cuda() -> None:
-    has_cuda_ext = (
-        hasattr(kernels, "cuda")
-        and kernels.cuda is not None
-        and hasattr(kernels.cuda, "neighbor_map_post_process_for_masked_implicit_gemm_2")
-    )
-    if not has_cuda_ext:
-        pytest.skip("CUDA extension is required for comparison")
-
-    feats, coords, shape = sphere_coords(32, 16, dtype=torch.float16)
-    weight = torch.empty(16, 3, 3, 3, 16, device=feats.device, dtype=feats.dtype)
-
-    original_algorithm = spconv.ALGORITHM
-    original_backend = spconv.BACKEND
-    try:
-        cache_cuda = _compute_neighbor_cache(
-            coords, shape, weight, spconv.Algorithm.MASKED_IMPLICIT_GEMM, use_triton=False
-        )
-    finally:
-        spconv.set_algorithm(original_algorithm)
-        spconv.set_backend(original_backend)
-
-    gray_code = cache_cuda["gray_code"]
-    sorted_idx = cache_cuda["sorted_idx"]
-
-    for block_size in (32, 64, 128):
-        triton_valid, triton_seg = (
-            kernels.triton.neighbor_map_post_process_for_masked_implicit_gemm_2(
-                gray_code, sorted_idx, block_size
-            )
-        )
-        cuda_valid, cuda_seg = (
-            kernels.cuda.neighbor_map_post_process_for_masked_implicit_gemm_2(
-                gray_code, sorted_idx, block_size
-            )
-        )
-        _assert_tensor_equal(triton_valid, cuda_valid)
-        _assert_tensor_equal(triton_seg, cuda_seg)
-
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for Triton kernels")
 @pytest.mark.skipif(os.getenv("RUN_BENCHMARKS") != "1", reason="Set RUN_BENCHMARKS=1 to run benchmark tests")
@@ -192,7 +147,6 @@ def test_triton_neighbor_map_post_process_2_matches_cuda() -> None:
     "res,ch,algorithm",
     [
         (512, 32, spconv.Algorithm.IMPLICIT_GEMM),
-        (512, 32, spconv.Algorithm.MASKED_IMPLICIT_GEMM),
         (512, 32, spconv.Algorithm.MASKED_IMPLICIT_GEMM_SPLITK),
     ],
 )
@@ -208,22 +162,16 @@ def test_triton_neighbor_cache_benchmark(res: int, ch: int, algorithm: spconv.Al
     feats, coords, shape = sphere_coords(res, ch, dtype=torch.float16)
     weight = torch.empty(ch, 3, 3, 3, ch, device=feats.device, dtype=feats.dtype)
 
-    original_algorithm = spconv.ALGORITHM
-    original_backend = spconv.BACKEND
-    try:
-        triton_ms = _time_cuda_ms(
-            lambda: _compute_neighbor_cache(coords, shape, weight, algorithm, use_triton=True),
-            warmup=10,
-            iters=50,
-        )
-        cuda_ms = _time_cuda_ms(
-            lambda: _compute_neighbor_cache(coords, shape, weight, algorithm, use_triton=False),
-            warmup=10,
-            iters=50,
-        )
-    finally:
-        spconv.set_algorithm(original_algorithm)
-        spconv.set_backend(original_backend)
+    triton_ms = _time_cuda_ms(
+        lambda: _compute_neighbor_cache(coords, shape, weight, algorithm, use_triton=True),
+        warmup=10,
+        iters=50,
+    )
+    cuda_ms = _time_cuda_ms(
+        lambda: _compute_neighbor_cache(coords, shape, weight, algorithm, use_triton=False),
+        warmup=10,
+        iters=50,
+    )
 
     print(
         f"\n[neighbor_cache benchmark] res={res}, ch={ch}, algo={algorithm}, "

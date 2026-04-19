@@ -56,3 +56,33 @@ def pad_to_size_along_dim(x: Tensor, dim: int | tuple[int, ...], size: int | tup
             value=value
         )
     return x
+
+
+def lookup_pytorch(key: Tensor, query: Tensor) -> Tensor:
+    """Look up `query` in `key` like a dictionary. Useful for COO indexing.
+
+    Parameters
+    ----
+    - `key` (Tensor): shape `(K, *key_shape)`, the array to search in
+    - `query` (Tensor): shape `(..., *key_shape)`, the array to search for. `...` represents any number of batch dimensions.
+
+    Returns
+    ----
+    - `indices` (Tensor): shape `(...,)` shape `(...,)` indices in `key` for each `query`. If a query is not found in key, the corresponding index will be -1.
+
+    Notes
+    ----
+    `O((Q + K) * log(Q + K))` complexity, where `Q` is the number of queries and `K` is the number of keys.
+    """
+    num_keys, *key_shape = key.shape
+    query_batch_shape = query.shape[:query.ndim - key.ndim + 1]
+
+    unique, inverse = torch.unique(
+        torch.cat([key, query.reshape(-1, *key_shape)], dim=0),
+        dim=0,
+        return_inverse=True
+    )
+    index = torch.full((unique.shape[0],), -1, dtype=torch.long, device=key.device)
+    index.scatter_(0, inverse[:num_keys], torch.arange(num_keys, device=key.device))
+    result = index.index_select(0, inverse[num_keys:]).reshape(query_batch_shape)
+    return torch.where(result < num_keys, result, -1)

@@ -2,7 +2,6 @@
 requires = [
     "setuptools>=64",
     "wheel",
-    "torch",
 ]
 build-backend = "setuptools.build_meta"
 
@@ -23,3 +22,9 @@ dependencies = [
     "triton-windows>=3.2.0; platform_system == 'Windows'",
     "filelock",
 ]
+
+[project.optional-dependencies]
+cuda = []
+
+[tool.setuptools.packages.find]
+include = ["flex_gemm*"]

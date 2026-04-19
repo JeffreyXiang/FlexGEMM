@@ -7,4 +7,9 @@ def set_hashmap_ratio(ratio: float):
 
 
 from .grid_sample_torch import grid_sample_3d_torch
-from .grid_sample import GridSample3dFunction, grid_sample_3d
+from .grid_sample import grid_sample_3d
+
+__all__ = [
+    "grid_sample_3d",
+    "grid_sample_3d_torch",
+]

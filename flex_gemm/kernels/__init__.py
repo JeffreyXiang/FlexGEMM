@@ -1,9 +1,11 @@
 from .triton import *
+from .. import config as pkg_config
 try:
-	from . import cuda as _cuda
-	if hasattr(_cuda, "hashmap_build_submanifold_conv_neighbour_map_cuda"):
-		cuda = _cuda
+	from . import cuda
+	from .cuda import *
+	if hasattr(cuda, "hashmap_build_submanifold_conv_neighbour_map_cuda"):	
+		pkg_config.IS_CUDA_EXTENSION_AVAILABLE = True
 	else:
-		cuda = None
-except Exception:
-	cuda = None
+		pkg_config.IS_CUDA_EXTENSION_AVAILABLE = False
+except ImportError:
+	pkg_config.IS_CUDA_EXTENSION_AVAILABLE = False

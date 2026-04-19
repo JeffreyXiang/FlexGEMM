@@ -234,7 +234,8 @@ def hashmap_build_triton(keys: Tensor) -> Tensor:
     # Pad keys to next power of two for efficient hashing and memory access.
     # keys = keys.flatten(1).contiguous().view(torch.uint8)
     keys = keys.flatten(1).contiguous()
-    keys = pad_to_size_along_dim(keys, dim=1, size=triton.next_power_of_2(keys.shape[1]), value=0)
+    D = triton.next_power_of_2(keys.shape[1])
+    keys = pad_to_size_along_dim(keys, dim=1, size=D, value=0)
 
     hashmap = torch.full((hashmap_size,), -1, dtype=torch.int32, device=keys.device)
     
@@ -246,7 +247,7 @@ def hashmap_build_triton(keys: Tensor) -> Tensor:
         hashmap_size=hashmap_size,
         keys_ptr=keys,
         n_keys=n_keys,
-        D=keys.shape[1],
+        D=D,
         BLOCK_SIZE=BLOCK_SIZE,
     )
 
@@ -284,10 +285,10 @@ def hashmap_lookup_triton(hashmap: Tensor, keys: Tensor, queries: Tensor) -> Ten
     keys = keys.view(torch.int32)
     queries = queries.view(torch.int32)
 
-    results = torch.full((n_queries,), -1, dtype=torch.int32, device=keys.device)
+    results = torch.empty((n_queries,), dtype=torch.int32, device=keys.device)
     
     BLOCK_SIZE = 64
-    grid = ((n_queries + BLOCK_SIZE - 1) // BLOCK_SIZE, )
+    grid = (triton.cdiv(n_queries, BLOCK_SIZE), )
     _hashmap_lookup_kernel_32bit[grid](
         queries_ptr=queries,
         keys_ptr=keys,
@@ -335,7 +336,7 @@ def hashmap_build_lookup_triton(keys: Tensor, queries: Tensor) -> Tensor:
     queries = queries.view(torch.int32)
 
     hashmap = torch.full((hashmap_size,), -1, dtype=torch.int32, device=keys.device)
-    results = torch.full((n_queries,), -1, dtype=torch.int32, device=keys.device)
+    results = torch.empty((n_queries,), dtype=torch.int32, device=keys.device)
     
     BLOCK_SIZE = 64
     grid = (triton.cdiv(n_keys, BLOCK_SIZE), )
