@@ -359,15 +359,15 @@ def _compute_neighbor_cache_any_offset(
         ], dim=1)
 
     # Compute neighbor map
-    if config.BACKEND == config.Backend.TRITON:
+    if config._USE_PYTORCH_FOR_TEST:
+        neighbor_coords = coords[:, None, :] + offsets[None, :, :]          # [N, V, 4]
+        neighbor_map = lookup_pytorch(coords, neighbor_coords).to(torch.int32)
+    else:
         neighbor_map = kernels.triton.build_neighbor_map_triton(
             coords,
             offsets=offsets,
         )
-    elif config.BACKEND == config.Backend._TORCH_FOR_TEST:
-        neighbor_coords = coords[:, None, :] + offsets[None, :, :]          # [N, V, 4]
-        neighbor_map = lookup_pytorch(coords, neighbor_coords).to(torch.int32)
-    
+        
     return SubMConvNeighborCache(neighbor_map)
 
 
