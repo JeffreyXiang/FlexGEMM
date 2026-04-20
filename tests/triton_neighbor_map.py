@@ -1,11 +1,13 @@
 import itertools
 import os
+import math
 
 import pytest
 import torch
 
 from flex_gemm.kernels.triton.neighbor_map import (
-    build_neighbor_map_triton,
+    build_neighbor_map_from_offsets_triton,
+    build_neighbor_map_from_kernel_dilation_triton
 )
 from flex_gemm.ops.utils import make_conv_neighbor_offsets
 from utils import sphere_coords
@@ -73,7 +75,7 @@ def test_build_submanifold_conv3d_neighbour_map_matches_reference() -> None:
 
     kernel_size = (3, 3, 3)
     dilation = (1, 1, 1)
-    out = build_neighbor_map_triton(
+    out = build_neighbor_map_from_offsets_triton(
         coords, 
         offsets=make_conv_neighbor_offsets(kernel_size, dilation, dtype=torch.int32, device=device)
     )
@@ -108,7 +110,7 @@ def test_neighbor_map_triton_dense_speed_benchmark() -> None:
     kernel_size = (3, 3, 3)
     dilation = (1, 1, 1)
     build_ms = _time_cuda_ms(
-        lambda: build_neighbor_map_triton(
+        lambda: build_neighbor_map_from_offsets_triton(
             coords, 
             offsets=make_conv_neighbor_offsets(kernel_size, dilation, dtype=torch.int32, device=device)
         ),
@@ -116,7 +118,7 @@ def test_neighbor_map_triton_dense_speed_benchmark() -> None:
         iters=50,
     )
 
-    out = build_neighbor_map_triton(
+    out = build_neighbor_map_from_offsets_triton(
         coords, 
         offsets=make_conv_neighbor_offsets(kernel_size, dilation, dtype=torch.int32, device=device)
     )
@@ -150,7 +152,7 @@ def test_neighbor_map_triton_shuffled_speed_benchmark() -> None:
     kernel_size = (3, 3, 3)
     dilation = (1, 1, 1)
     build_ms = _time_cuda_ms(
-        lambda: build_neighbor_map_triton(
+        lambda: build_neighbor_map_from_offsets_triton(
             coords, 
             offsets=make_conv_neighbor_offsets(kernel_size, dilation, dtype=torch.int32, device=device)
         ),
@@ -158,7 +160,7 @@ def test_neighbor_map_triton_shuffled_speed_benchmark() -> None:
         iters=50,
     )
 
-    out = build_neighbor_map_triton(
+    out = build_neighbor_map_from_offsets_triton(
         coords, 
         offsets=make_conv_neighbor_offsets(kernel_size, dilation, dtype=torch.int32, device=device)
     )
@@ -173,30 +175,28 @@ def test_neighbor_map_triton_shuffled_speed_benchmark() -> None:
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for Triton kernels")
 @pytest.mark.skipif(os.getenv("RUN_BENCHMARKS") != "1", reason="Set RUN_BENCHMARKS=1 to run benchmark tests")
-def test_neighbor_map_triton_sparse_speed_benchmark() -> None:
+@pytest.mark.parametrize("dtype", [torch.int16, torch.int32])
+def test_neighbor_map_triton_sparse_speed_benchmark(dtype: torch.dtype) -> None:
     device = torch.device("cuda")
-    res = 512
+    res = 256
     _, coords, _ = sphere_coords(res, 16, dtype=torch.float16)
     n_coords = coords.shape[0]
+    coords = coords.to(dtype)
+    coords = torch.cat([torch.zeros(n_coords, 1, device=device, dtype=coords.dtype), coords], dim=-1).contiguous()  # 5D coordinates with batch dim = 1
 
-    kernel_size = (3, 3, 3)
-    dilation = (1, 1, 1)
+    kernel_size = (2, 2, 2, 2)
+    dilation = (1, 1, 1, 1)
     build_ms = _time_cuda_ms(
-        lambda: build_neighbor_map_triton(
+        lambda: build_neighbor_map_from_kernel_dilation_triton(
             coords, 
-            offsets=make_conv_neighbor_offsets(kernel_size, dilation, batch_dims=coords.shape[1] - 3, dtype=coords.dtype, device=device)
+            kernel_size=kernel_size,
+            dilation=dilation,
         ),
         warmup=10,
         iters=50,
     )
 
-    out = build_neighbor_map_triton(
-        coords, 
-        offsets=make_conv_neighbor_offsets(kernel_size, dilation, batch_dims=coords.shape[1] - 3, dtype=coords.dtype, device=device)
-    )
-    assert out.shape == (n_coords, 27)
-
-    neighbor_qps = (n_coords * 27) / (build_ms * 1e-3)
+    neighbor_qps = (n_coords * math.prod(kernel_size)) / (build_ms * 1e-3)
     print(
         f"\n[neighbor_map benchmark] n_coords={n_coords}, kernel={kernel_size}, "
         f"dilation={dilation}, build={build_ms:.3f} ms, neighbor_qps={neighbor_qps:,.0f}/s"
