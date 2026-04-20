@@ -4,6 +4,8 @@
 [![Triton](https://img.shields.io/badge/Triton-%E2%89%A53.2.0-blue)](https://github.com/openai/triton)
 [![PyTorch](https://img.shields.io/badge/PyTorch-%E2%89%A52.4.0-red)](https://pytorch.org/)
 
+> ***NOTE: The `dev/all_triton` branch defaults to pure Triton and does not require compiling extensions.***
+
 **FlexGEMM** is a high-performance, **Triton-powered GEMM backend** designed for **3D sparse convolutions**. 
 
 It implements **Explicit**, **Implicit**, and **Masked Implicit** algorithm variants, featuring optional **Split-K** parallelism for sparse GEMM. FlexGEMM delivers **state-of-the-art performance** for Submanifold Convolution and voxel-based neural networks, consistently outperforming existing solutions.
@@ -27,9 +29,13 @@ It implements **Explicit**, **Implicit**, and **Masked Implicit** algorithm vari
 
 ### Install via pip
 ```bash
-git clone https://github.com/JeffreyXiang/FlexGEMM.git
-cd FlexGEMM
-pip install . --no-build-isolation
+pip install "flex_gemm @ git+https://github.com/JeffreyXiang/FlexGEMM.git@dev/all_triton"
+```
+
+### Optional CUDA extension
+By default the CUDA extension is not compiled. To build it:
+```bash
+FLEX_GEMM_BUILD_CUDA=1 pip install "flex_gemm[cuda] @ git+https://github.com/JeffreyXiang/FlexGEMM.git@dev/all_triton" --no-build-isolation
 ```
 
 ## 💻 Usage Example

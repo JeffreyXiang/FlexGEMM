@@ -7,12 +7,20 @@ class Algorithm:
     MASKED_IMPLICIT_GEMM_SPLITK = "masked_implicit_gemm_splitk"
 
 
-ALGORITHM = Algorithm.MASKED_IMPLICIT_GEMM_SPLITK  # Default algorithm
-HASHMAP_RATIO = 2.0         # Ratio of hashmap size to input size
-
+ALGORITHM = Algorithm.MASKED_IMPLICIT_GEMM_SPLITK  
+"Default algorithm"
+HASHMAP_RATIO = 2.0         
+"Ratio of hashmap size to input size"
 
 def set_algorithm(algorithm: Algorithm):
     global ALGORITHM
+    assert algorithm in (
+        Algorithm.EXPLICIT_GEMM,
+        Algorithm.IMPLICIT_GEMM,
+        Algorithm.IMPLICIT_GEMM_SPLITK,
+        Algorithm.MASKED_IMPLICIT_GEMM,
+        Algorithm.MASKED_IMPLICIT_GEMM_SPLITK,
+    ), f"Unsupported algorithm {algorithm}"
     ALGORITHM = algorithm
 
 
@@ -21,4 +29,4 @@ def set_hashmap_ratio(ratio: float):
     HASHMAP_RATIO = ratio
 
 
-from .submanifold_conv3d import SubMConv3dFunction, sparse_submanifold_conv3d
+from .submanifold_conv import *

@@ -1,16 +1,18 @@
-import os
-USE_AUTOTUNE_CACHE = os.environ.get('FLEX_GEMM_USE_AUTOTUNE_CACHE', '1') == '1'
-AUTOSAVE_AUTOTUNE_CACHE = os.environ.get('FLEX_GEMM_AUTOSAVE_AUTOTUNE_CACHE', '1') == '1'
-AUTOTUNE_CACHE_PATH = os.environ.get(
-    'FLEX_GEMM_AUTOTUNE_CACHE_PATH',
-    os.path.expanduser('~/.flex_gemm/autotune_cache.json')
-)
-    
+from . import config
+
+if config.USE_AUTOTUNE_CACHE:
+    from .utils.autotuner import load_autotune_cache
+    load_autotune_cache()
 
 from . import kernels
 from . import ops
-from . import utils
 
-
-if USE_AUTOTUNE_CACHE:
-    utils.load_autotune_cache()
+# Top-level imports for convenience
+from .ops.spconv import (
+    sparse_submanifold_conv,
+    sparse_submanifold_conv3d,
+    sparse_submanifold_conv_any_offset,
+)
+from .ops.grid_sample import (
+    grid_sample_3d,
+)

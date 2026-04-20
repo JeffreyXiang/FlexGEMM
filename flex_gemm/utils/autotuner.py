@@ -9,10 +9,8 @@ import triton
 import time
 import inspect
 from filelock import FileLock
-from .. import (
-    AUTOSAVE_AUTOTUNE_CACHE,
-    AUTOTUNE_CACHE_PATH,
-)
+
+from .. import config as pkg_config
 
 
 class TritonPersistentCacheAutotuner(triton.runtime.Autotuner):
@@ -47,6 +45,8 @@ class TritonPersistentCacheAutotuner(triton.runtime.Autotuner):
             use_cuda_graph,
             do_bench,
         )
+        self._cache_key = _get_function_cache_key(fn)
+        _register_autotuner(self)
 
     def run(self, *args, **kwargs):
         self.nargs = dict(zip(self.arg_names, args))
@@ -60,17 +60,21 @@ class TritonPersistentCacheAutotuner(triton.runtime.Autotuner):
                     key.append(str(arg.dtype))
             key = str(tuple(key))
             if key not in self.cache:
-                # prune configs
-                used_cached_result = False
-                pruned_configs = self.prune_configs(kwargs)
-                bench_start = time.time()
-                timings = {config: self._bench(*args, config=config, **kwargs) for config in pruned_configs}
-                bench_end = time.time()
-                self.bench_time = bench_end - bench_start
-                self.cache[key] = builtins.min(timings, key=timings.get)
-                full_nargs = {**self.nargs, **kwargs, **self.cache[key].all_kwargs()}
-                self.pre_hook(full_nargs, reset_only=True)
-                self.configs_timings = timings
+                if not pkg_config.USE_AUTOTUNE_RUNTIME:
+                    # Fall back to the first config without benchmarking.
+                    self.cache[key] = self.configs[0]
+                else:
+                    # prune configs
+                    used_cached_result = False
+                    pruned_configs = self.prune_configs(kwargs)
+                    bench_start = time.time()
+                    timings = {config: self._bench(*args, config=config, **kwargs) for config in pruned_configs}
+                    bench_end = time.time()
+                    self.bench_time = bench_end - bench_start
+                    self.cache[key] = builtins.min(timings, key=timings.get)
+                    full_nargs = {**self.nargs, **kwargs, **self.cache[key].all_kwargs()}
+                    self.pre_hook(full_nargs, reset_only=True)
+                    self.configs_timings = timings
             config = self.cache[key]
         else:
             config = self.configs[0]
@@ -78,7 +82,7 @@ class TritonPersistentCacheAutotuner(triton.runtime.Autotuner):
         if os.getenv("TRITON_PRINT_AUTOTUNING", None) == "1" and not used_cached_result:
             print(f"Triton autotuning for function {self.base_fn.__name__} finished after "
                   f"{self.bench_time:.2f}s; best config selected: {self.best_config};")
-        if AUTOSAVE_AUTOTUNE_CACHE and not used_cached_result:
+        if pkg_config.AUTOSAVE_AUTOTUNE_CACHE and not used_cached_result:
             save_autotune_cache()
         if config.pre_hook is not None:
             full_nargs = {**self.nargs, **kwargs, **config.all_kwargs()}
@@ -229,6 +233,8 @@ class PersistentCacheAutoTuner:
         self.verbose = verbose or os.getenv('FLEX_GEMM_AUTOTUNER_VERBOSE', '0') == '1'
         self.kernel_arg_names = inspect.getfullargspec(kernel).args
         self.cache = {}
+        self._cache_key = _get_function_cache_key(kernel)
+        _register_autotuner(self)
         
     def _args_to_kwargs(self, args, kwargs):
         # Convert args to kwargs
@@ -247,18 +253,24 @@ class PersistentCacheAutoTuner:
         # If key changes, rerun autotune
         used_cached_result = True
         if key not in self.cache:
-            used_cached_result = False
-            if self.verbose:
-                print(f"Running autotuning for {self.kernel.__name__} with key {key}")
-            configs = self.configs if self.configs else self.config_fn(*args, **kwargs)
-            if self.verbose:
-                print(f"Configs: {configs}")
-            best_config = self._benchmark(args, kwargs, configs)
-            if self.verbose:
-                print(f"Best config for {self.kernel.__name__} with key {key}: {best_config}")
-            self.cache[key] = best_config
+            if not pkg_config.USE_AUTOTUNE_RUNTIME:
+                configs = self.configs if self.configs else self.config_fn(*args, **kwargs)
+                if not configs:
+                    raise ValueError("autotune configs must be non-empty")
+                self.cache[key] = configs[0]
+            else:
+                used_cached_result = False
+                if self.verbose:
+                    print(f"Running autotuning for {self.kernel.__name__} with key {key}")
+                configs = self.configs if self.configs else self.config_fn(*args, **kwargs)
+                if self.verbose:
+                    print(f"Configs: {configs}")
+                best_config = self._benchmark(args, kwargs, configs)
+                if self.verbose:
+                    print(f"Best config for {self.kernel.__name__} with key {key}: {best_config}")
+                self.cache[key] = best_config
             
-        if AUTOSAVE_AUTOTUNE_CACHE and not used_cached_result:
+        if pkg_config.AUTOSAVE_AUTOTUNE_CACHE and not used_cached_result:
             save_autotune_cache()
         
         # Run the kernel with the best config
@@ -322,30 +334,98 @@ def walk_package(package_name, fn):
             walk_package(full_module_name, fn)
         else:
             fn(full_module_name)
+
+
+_AUTOTUNE_REGISTRY = {}
+_PENDING_AUTOTUNE_CACHE = None
+
+
+def _get_callable_name(fn):
+    for attr in ("__name__", "__qualname__"):
+        name = getattr(fn, attr, None)
+        if name:
+            return name
+    for inner_attr in ("fn", "f", "kernel", "_fn"):
+        inner = getattr(fn, inner_attr, None)
+        if inner is None:
+            continue
+        for attr in ("__name__", "__qualname__"):
+            name = getattr(inner, attr, None)
+            if name:
+                return name
+    return fn.__class__.__name__
+
+
+def _get_function_cache_key(fn):
+    module = getattr(fn, "__module__", None) or getattr(fn.__class__, "__module__", "unknown")
+    name = _get_callable_name(fn)
+    return f"{module}.{name}"
+
+
+def _get_device_name():
+    try:
+        if not torch.cuda.is_available():
+            return None
+        return torch.cuda.get_device_name()
+    except Exception:
+        return None
+
+
+def _get_cache_device_name(cache):
+    device_name = _get_device_name()
+    if device_name is None:
+        return None
+    if device_name in cache:
+        return device_name
+    if "*" in cache:
+        return "*"
+    return None
+
+
+def _apply_cache_to_tuner(tuner, cache, device_name):
+    cache_key = getattr(tuner, "_cache_key", None)
+    if cache_key is None:
+        return
+    if cache_key not in cache.get(device_name, {}):
+        return
+    cached_value = cache[device_name][cache_key]
+    if isinstance(tuner, PersistentCacheAutoTuner):
+        tuner.cache = cached_value
+    elif isinstance(tuner, TritonPersistentCacheAutotuner):
+        for k, v in cached_value.items():
+            tuner.cache[k] = triton.runtime.Config(None)
+            tuner.cache[k].__dict__.update(v)
+
+
+def _register_autotuner(tuner):
+    cache_key = getattr(tuner, "_cache_key", None)
+    if cache_key is None:
+        return
+    _AUTOTUNE_REGISTRY[cache_key] = tuner
+    if _PENDING_AUTOTUNE_CACHE:
+        device_name = _get_cache_device_name(_PENDING_AUTOTUNE_CACHE)
+        if device_name is not None:
+            _apply_cache_to_tuner(tuner, _PENDING_AUTOTUNE_CACHE, device_name)
             
 
 def get_autotune_cache():
     cache = {}
-    device_name = torch.cuda.get_device_name()
-    if device_name not in cache:
-        cache[device_name] = {}
+    device_name = _get_device_name()
+    if device_name is None:
+        return cache
+    cache[device_name] = {}
 
-    def save_cache(full_module_name):
-        module = importlib.import_module(full_module_name)
-        for attr_name, attr in module.__dict__.items():
-            cache_key = f"{full_module_name}.{attr_name}"
-            if isinstance(attr, PersistentCacheAutoTuner):
-                cache[device_name][cache_key] = attr.cache
-            elif isinstance(attr, TritonPersistentCacheAutotuner):
-                cache[device_name][cache_key] = {k: v.__dict__ for k, v in attr.cache.items()}
-
-    walk_package('flex_gemm', save_cache)
+    for cache_key, tuner in _AUTOTUNE_REGISTRY.items():
+        if isinstance(tuner, PersistentCacheAutoTuner):
+            cache[device_name][cache_key] = tuner.cache
+        elif isinstance(tuner, TritonPersistentCacheAutotuner):
+            cache[device_name][cache_key] = {k: v.__dict__ for k, v in tuner.cache.items()}
 
     return cache
 
 
 def save_autotune_cache(path=None):
-    path = path or AUTOTUNE_CACHE_PATH
+    path = path or pkg_config.AUTOTUNE_CACHE_PATH
     lock_path = path + ".lock"
 
     with FileLock(lock_path):
@@ -370,7 +450,7 @@ def load_autotune_cache(path_or_cache=None):
 
     # Preserve path-based loading, but allow callers to provide a preloaded cache object.
     if path_or_cache is None or isinstance(path_or_cache, (str, os.PathLike)):
-        path = path_or_cache or AUTOTUNE_CACHE_PATH
+        path = path_or_cache or pkg_config.AUTOTUNE_CACHE_PATH
         lock_path = path + ".lock"
 
         if not os.path.exists(path):
@@ -386,24 +466,12 @@ def load_autotune_cache(path_or_cache=None):
 
     if cache is None:
         return
+    global _PENDING_AUTOTUNE_CACHE
+    _PENDING_AUTOTUNE_CACHE = cache
 
-    device_name = torch.cuda.get_device_name()
-    if device_name not in cache and "*" not in cache:
+    device_name = _get_cache_device_name(cache)
+    if device_name is None:
         return
-    if "*" in cache and device_name not in cache:
-        device_name = "*"
 
-    def load_cache(full_module_name):
-        module = importlib.import_module(full_module_name)
-        for attr_name, attr in module.__dict__.items():
-            cache_key = f"{full_module_name}.{attr_name}"
-            if isinstance(attr, PersistentCacheAutoTuner):
-                if cache_key in cache[device_name]:
-                    attr.cache = cache[device_name][cache_key]
-            elif isinstance(attr, TritonPersistentCacheAutotuner):
-                if cache_key in cache[device_name]:
-                    for k, v in cache[device_name][cache_key].items():
-                        attr.cache[k] = triton.runtime.Config(None)
-                        attr.cache[k].__dict__.update(v)
-
-    walk_package('flex_gemm', load_cache)
+    for tuner in _AUTOTUNE_REGISTRY.values():
+        _apply_cache_to_tuner(tuner, cache, device_name)
