@@ -8,7 +8,6 @@ import triton
 import triton.language as tl
 
 from .hashmap import hashmap_build_triton, _hashmap_lookup_inline_32bit, _vec_load, pad_to_size_along_dim
-from ...ops.utils import make_conv_neighbor_offsets
 
 
 __all__ = [
@@ -24,7 +23,7 @@ __all__ = [
 def _hashmap_find_store_neighbor_map_inline(
     hashmap_ptr: tl.tensor,
     hashmap_size: int,
-    coords_ptr: tl.tensor,
+    coords_ptr: tl.const,
     offs_coords: tl.tensor,
     mask_coords: tl.tensor,
     offs_neighbors: tl.tensor,
@@ -72,9 +71,9 @@ def _hashmap_prepare_offs_masks_inline(
 def _hashmap_build_neighbor_map_from_offsets_kernel(
     hashmap_ptr: tl.tensor,
     hashmap_size: int,
-    coords_ptr: tl.pointer_type,
+    coords_ptr: tl.const,
     n_coords: int,
-    neighbor_offsets_ptr: tl.pointer_type,
+    neighbor_offsets_ptr: tl.const,
     n_neighbors: int,
     neighbor_map_ptr: tl.pointer_type,
     D: tl.constexpr,
@@ -105,9 +104,9 @@ def _hashmap_build_neighbor_map_from_offsets_kernel(
 
 # =========== 4D ============
 @triton.jit
-def _make_4d_vec_inline(x0, x1, x2, x3) -> tl.tensor:
+def _make_4d_vec_inline(x0, x1, x2, x3, dtype=tl.int32) -> tl.tensor:
     idx = tl.arange(0, 4)
-    vec = tl.full((4,), x0, dtype=tl.int32)
+    vec = tl.full((4,), x0, dtype=dtype)
     vec = tl.where(idx == 1, x1, vec)
     vec = tl.where(idx == 2, x2, vec)
     vec = tl.where(idx == 3, x3, vec)
@@ -118,7 +117,7 @@ def _make_4d_vec_inline(x0, x1, x2, x3) -> tl.tensor:
 def _make_conv_neighbor_offsets_4d_inline(
     idx: tl.tensor,
     K0: tl.constexpr, K1: tl.constexpr, K2: tl.constexpr, K3: tl.constexpr, 
-    L0: int, L1: int, L2: int, L3: int,
+    L0: int, L1: int, L2: int, L3: int
 ) -> tl.tensor:
     strides_vec = _make_4d_vec_inline(K1 * K2 * K3, K2 * K3, K3, 1)
     kernel_sizes_vec = _make_4d_vec_inline(K0, K1, K2, K3)
@@ -134,7 +133,7 @@ def _make_conv_neighbor_offsets_4d_inline(
 def _hashmap_build_neighbor_map_conv4d_kernel(
     hashmap_ptr: tl.tensor,
     hashmap_size: int,
-    coords_ptr: tl.pointer_type,
+    coords_ptr: tl.const,
     n_coords: int,
     neighbor_map_ptr: tl.pointer_type,
     K0: tl.constexpr, K1: tl.constexpr, K2: tl.constexpr, K3: tl.constexpr,
@@ -154,7 +153,7 @@ def _hashmap_build_neighbor_map_conv4d_kernel(
     neighbor_offset_vec = _make_conv_neighbor_offsets_4d_inline(
         offs_neighbors, 
         K0, K1, K2, K3, 
-        L0, L1, L2, L3,
+        L0, L1, L2, L3
     ) # (BLOCK_N_NEIGHBORS, D)
     
     _hashmap_find_store_neighbor_map_inline(
@@ -175,9 +174,9 @@ def _hashmap_build_neighbor_map_conv4d_kernel(
 
 # ========= 8-D =========
 @triton.jit
-def _make_8d_vec_inline(x0, x1, x2, x3, x4, x5, x6, x7) -> tl.tensor:
+def _make_8d_vec_inline(x0, x1, x2, x3, x4, x5, x6, x7, dtype=tl.int32) -> tl.tensor:
     idx = tl.arange(0, 8)
-    vec = tl.full((8,), x0, dtype=tl.int32)
+    vec = tl.full((8,), x0, dtype=dtype)
     vec = tl.where(idx == 1, x1, vec)
     vec = tl.where(idx == 2, x2, vec)
     vec = tl.where(idx == 3, x3, vec)

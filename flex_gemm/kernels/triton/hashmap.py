@@ -93,7 +93,7 @@ def _vec_pack_little_endian_to_int32(vec: tl.tensor) -> tl.tensor:
 def _hashmap_build_kernel_32bit(
     hashmap_ptr: tl.tensor, 
     hashmap_size: int,
-    keys_ptr: tl.tensor,
+    keys_ptr: tl.const,
     n_keys: int,
     D: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
@@ -134,7 +134,7 @@ def _hashmap_build_kernel_32bit(
 def _hashmap_lookup_inline_32bit(
     hashmap_ptr: tl.tensor,
     hashmap_size: int,
-    keys_ptr: tl.tensor,
+    keys_ptr: tl.const,
     query_vec: tl.tensor,   
     mask: tl.tensor,
     D: tl.constexpr
@@ -187,8 +187,8 @@ def _hashmap_lookup_inline_32bit(
 
 @triton.jit
 def _hashmap_lookup_kernel_32bit(
-    queries_ptr: tl.pointer_type,
-    keys_ptr: tl.pointer_type,
+    queries_ptr: tl.const,
+    keys_ptr: tl.const,
     hashmap_ptr: tl.pointer_type,
     results_ptr: tl.pointer_type,
     hashmap_size: int,

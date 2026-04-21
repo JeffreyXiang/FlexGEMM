@@ -182,9 +182,9 @@ def test_neighbor_map_triton_sparse_speed_benchmark(dtype: torch.dtype) -> None:
     _, coords, _ = sphere_coords(res, 16, dtype=torch.float16)
     n_coords = coords.shape[0]
     coords = coords.to(dtype)
-    coords = torch.cat([torch.zeros(n_coords, 1, device=device, dtype=coords.dtype), coords], dim=-1).contiguous()  # 5D coordinates with batch dim = 1
+    # coords = torch.cat([torch.zeros(n_coords, 1, device=device, dtype=coords.dtype), coords], dim=-1).contiguous()  # 5D coordinates with batch dim = 1
 
-    kernel_size = (2, 2, 2, 2)
+    kernel_size = (1, 3, 3, 3)
     dilation = (1, 1, 1, 1)
     build_ms = _time_cuda_ms(
         lambda: build_neighbor_map_from_kernel_dilation_triton(

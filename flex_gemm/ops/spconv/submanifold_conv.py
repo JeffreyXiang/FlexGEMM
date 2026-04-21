@@ -379,9 +379,10 @@ def _compute_neighbor_cache_kernel_dilation(
 
     # CUDA extension is specially optimized for 3D convolution with int32 coords.
     use_cuda_extension = config.USE_CUDA_EXTENSION \
-        and shape is not None \
-        and len(kernel_size) == len(dilation) == 3 \
         and coords.shape[1] == 4 \
+        and coords.dtype == torch.int32 \
+        and shape is not None \
+        and kernel_size == (3, 3, 3)
 
     if config._USE_PYTORCH_FOR_TEST:
         # Debug only
@@ -391,8 +392,6 @@ def _compute_neighbor_cache_kernel_dilation(
 
     elif use_cuda_extension:
         # Use the CUDA extension if possible
-        assert coords.dtype in [torch.int32], "Coords should be int32 for CUDA backend"
-
         N, C, W, H, D = shape
         hashmap_keys, hashmap_vals = init_hashmap(shape, int(spconv.HASHMAP_RATIO * coords.shape[0]), coords.device)
         neighbor_map = kernels.cuda.hashmap_build_submanifold_conv_neighbour_map_cuda(
@@ -401,12 +400,13 @@ def _compute_neighbor_cache_kernel_dilation(
             kernel_size[0], kernel_size[1], kernel_size[2],
             dilation[0], dilation[1], dilation[2],
         )
+
     else:
         # Triton kernels for neighbor map construction. 
         neighbor_map = kernels.triton.build_neighbor_map_from_kernel_dilation_triton(
             coords,
-            kernel_size=(1,) * (coords.shape[1] - len(kernel_size)) + kernel_size,
-            dilation=(1,) * (coords.shape[1] - len(dilation)) + dilation,
+            kernel_size=kernel_size,
+            dilation=dilation,
         )
             
     return SubMConvNeighborCache(neighbor_map)
@@ -550,5 +550,5 @@ def sparse_submanifold_conv_any_offset(
         neighbor_cache = _compute_neighbor_cache_any_offset(coords, offsets)
     
     SubMConvFunc = _select_submconv_function(algorithm)
-    output, neighbor_cache = SubMConvFunc.apply(feats, neighbor_cache, weight.flatten(1, -2), bias)
+    output, neighbor_cache = SubMConvFunc.apply(feats, neighbor_cache, weight, bias)
     return output, neighbor_cache
