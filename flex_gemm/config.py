@@ -14,7 +14,7 @@ IS_CUDA_EXTENSION_AVAILABLE = None
 If CUDA extension is required but not available, consider re-installing flex_gemm [cuda] option to build the extension."""
 
 USE_CUDA_EXTENSION = True
-"Whether to use CUDA extension for hashmap-based neighbor map construction. Ignored if the extension is not available."
+"Whether to use CUDA extension for hashmap-based neighbor map construction. Will be set to False if the CUDA extension is not available at initialization."
 
 _USE_PYTORCH_FOR_TEST = False
 "Internal debugging flag to indicate whether we are using the pure PyTorch implementation for reference testing. "

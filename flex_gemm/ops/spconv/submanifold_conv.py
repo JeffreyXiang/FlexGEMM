@@ -21,9 +21,6 @@ __all__ = [
 ]
 
 
-
-
-
 class SubMConvNeighborCache:
     neighbor_map: Tensor
 
@@ -363,9 +360,9 @@ def _compute_neighbor_cache_any_offset(
         neighbor_coords = coords[:, None, :] + offsets[None, :, :]          # [N, V, 4]
         neighbor_map = lookup_pytorch(coords, neighbor_coords).to(torch.int32)
     else:
-        neighbor_map = kernels.triton.build_neighbor_map_triton(
+        neighbor_map = kernels.triton.build_neighbor_map_from_offsets_triton(
             coords,
-            offsets=offsets,
+            offsets,
         )
         
     return SubMConvNeighborCache(neighbor_map)
@@ -382,9 +379,10 @@ def _compute_neighbor_cache_kernel_dilation(
 
     # CUDA extension is specially optimized for 3D convolution with int32 coords.
     use_cuda_extension = config.USE_CUDA_EXTENSION \
-        and shape is not None \
-        and len(kernel_size) == len(dilation) == 3 \
         and coords.shape[1] == 4 \
+        and coords.dtype == torch.int32 \
+        and shape is not None \
+        and kernel_size == (3, 3, 3)
 
     if config._USE_PYTORCH_FOR_TEST:
         # Debug only
@@ -394,8 +392,6 @@ def _compute_neighbor_cache_kernel_dilation(
 
     elif use_cuda_extension:
         # Use the CUDA extension if possible
-        assert coords.dtype in [torch.int32], "Coords should be int32 for CUDA backend"
-
         N, C, W, H, D = shape
         hashmap_keys, hashmap_vals = init_hashmap(shape, int(spconv.HASHMAP_RATIO * coords.shape[0]), coords.device)
         neighbor_map = kernels.cuda.hashmap_build_submanifold_conv_neighbour_map_cuda(
@@ -404,22 +400,14 @@ def _compute_neighbor_cache_kernel_dilation(
             kernel_size[0], kernel_size[1], kernel_size[2],
             dilation[0], dilation[1], dilation[2],
         )
+
     else:
         # Triton kernels for neighbor map construction. 
-        if coords.shape[1] <= 4:
-            # If no more than 4 dimensions
-            neighbor_map = kernels.triton.build_neighbor_map_conv4d_triton(
-                coords,
-                kernel_size=(1,) * (coords.shape[1] - len(kernel_size)) + kernel_size,
-                dilation=(1,) * (coords.shape[1] - len(dilation)) + dilation,
-            )
-        else:
-            # For higher dimensions, fall back to the general kernel with offsets.
-            offsets = make_conv_neighbor_offsets(kernel_size, dilation, batch_dims=coords.shape[1] - len(kernel_size), dtype=torch.int32, device=coords.device)
-            neighbor_map = kernels.triton.build_neighbor_map_triton(
-                coords,
-                offsets=offsets
-            )
+        neighbor_map = kernels.triton.build_neighbor_map_from_kernel_dilation_triton(
+            coords,
+            kernel_size=kernel_size,
+            dilation=dilation,
+        )
             
     return SubMConvNeighborCache(neighbor_map)
 
@@ -511,14 +499,19 @@ def sparse_submanifold_conv3d(
             - output (Tensor): [N, Co] tensor of output features.
             - neighbor_cache (SubMConv3dNeighborCache): neighbor cache for backward or future reuse of shared structures.
     """
-    if isinstance(dilation, int):
-        dilation = (dilation,) * 3
-    if neighbor_cache is None:
-        neighbor_cache = _compute_neighbor_cache_kernel_dilation(coords, shape, weight.shape[1:4], dilation)
-    
-    SubMConvFunc = _select_submconv_function(algorithm)
-    output, neighbor_cache = SubMConvFunc.apply(feats, neighbor_cache, weight.flatten(1, -2), bias)
-    return output, neighbor_cache
+    assert coords.shape[1] == 4, "Coords should have 4 dimensions (batch + 3 spatial dims)"
+    assert weight.ndim == 5, "Weight should have 5 dimensions (Co, Kw, Kh, Kd, Ci)"
+
+    return sparse_submanifold_conv(
+        feats=feats,
+        coords=coords,
+        shape=shape,
+        weight=weight,
+        bias=bias,
+        neighbor_cache=neighbor_cache,
+        dilation=dilation,
+        algorithm=algorithm
+    )
 
 
 def sparse_submanifold_conv_any_offset(
@@ -557,5 +550,5 @@ def sparse_submanifold_conv_any_offset(
         neighbor_cache = _compute_neighbor_cache_any_offset(coords, offsets)
     
     SubMConvFunc = _select_submconv_function(algorithm)
-    output, neighbor_cache = SubMConvFunc.apply(feats, neighbor_cache, weight.flatten(1, -2), bias)
+    output, neighbor_cache = SubMConvFunc.apply(feats, neighbor_cache, weight, bias)
     return output, neighbor_cache

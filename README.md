@@ -33,7 +33,7 @@ pip install "flex_gemm @ git+https://github.com/JeffreyXiang/FlexGEMM.git@dev/al
 ```
 
 ### Optional CUDA extension
-By default the CUDA extension is not compiled. To build it:
+By default the CUDA extension is not compiled for easy installation. If you want to compile the CUDA extension for potentially better performance, install with the `cuda` extra:
 ```bash
 FLEX_GEMM_BUILD_CUDA=1 pip install "flex_gemm[cuda] @ git+https://github.com/JeffreyXiang/FlexGEMM.git@dev/all_triton" --no-build-isolation
 ```
@@ -45,7 +45,6 @@ Here is a minimal example demonstrating how to perform a sparse submanifold conv
 ```python
 import torch
 import flex_gemm
-from flex_gemm.ops.spconv import sparse_submanifold_conv3d
 from tests.spconv_fwd import sphere_coords
 
 # 1. Prepare Sparse Voxel Data
@@ -58,19 +57,14 @@ Ks = 3
 weight = torch.randn(Co, Ks, Ks, Ks, Ci, dtype=torch.float16, device='cuda', requires_grad=True)
 bias = torch.randn(Co, dtype=torch.float16, device='cuda', requires_grad=True)
 
-# 3. Configure Algorithm
-# Example: Using Masked Implicit GEMM with Split-K optimization
-flex_gemm.ops.spconv.set_algorithm(
-    flex_gemm.ops.spconv.Algorithm.MASKED_IMPLICIT_GEMM_SPLITK
-)
-
-# 4. Forward Pass
-out_feats, neighbor_cache = sparse_submanifold_conv3d(
+# 3. Forward Pass with FlexGEMM
+out_feats, neighbor_cache = flex_gemm.sparse_submanifold_conv3d(
     feats, coords, shape,
     weight, bias,
+    algorithm="masked_implicit_gemm_splitk" # Example: Using Masked Implicit GEMM with Split-K optimization
 )
 
-# 5. Backward Pass
+# 4. Backward Pass
 out_feats.sum().backward()
 ```
 
