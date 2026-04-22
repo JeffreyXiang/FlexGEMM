@@ -176,8 +176,9 @@ def sparse_conv_bwd_weight_implicit_gemm_splitk_kernel(
     tl.store(grad_weight_ptr, accumulator, mask=grad_weight_mask)
 
 
-def sparse_conv_fwd_implicit_gemm_splitk_configs(input, weight, bias, neighbor, **kwargs):
-    M, Co = neighbor.shape[0], weight.shape[0]
+def sparse_conv_fwd_implicit_gemm_splitk_configs(input, weight, bias, neighbor, TRANSPOSE_WEIGHT=False, **kwargs):
+    M = neighbor.shape[0]
+    Co = weight.shape[2] if TRANSPOSE_WEIGHT else weight.shape[0]
     MAX_NB1 = (M + 128 - 1) // 128
     MAX_NB2 = (Co + 128 - 1) // 128
     NUM_BLOCKS = MAX_NB1 * MAX_NB2
@@ -191,8 +192,9 @@ def sparse_conv_fwd_implicit_gemm_splitk_configs(input, weight, bias, neighbor, 
     return configs
 
 
-def sparse_conv_fwd_implicit_gemm_splitk_keys(input, weight, bias, neighbor, **kwargs):
-    N, M, Ci, Co, V = input.shape[0], neighbor.shape[0], input.shape[1], weight.shape[0], weight.shape[1]
+def sparse_conv_fwd_implicit_gemm_splitk_keys(input, weight, bias, neighbor, TRANSPOSE_WEIGHT=False, **kwargs):
+    Co = weight.shape[2] if TRANSPOSE_WEIGHT else weight.shape[0]
+    N, M, Ci, V = input.shape[0], neighbor.shape[0], input.shape[1], weight.shape[1]
     return f'(2^{int(math.log2(N))}, 2^{int(math.log2(M))}, {Ci}, {Co}, {V})'
 
 
@@ -208,11 +210,15 @@ def sparse_conv_fwd_implicit_gemm_splitk(
     SPLITK: int = 1,
     TRANSPOSE_WEIGHT: bool = False,
 ) -> torch.Tensor:
-    assert input.shape[1] == weight.shape[2], "Incompatible dimensions"
+    if TRANSPOSE_WEIGHT:
+        assert input.shape[1] == weight.shape[0], "Incompatible dimensions"
+    else:
+        assert input.shape[1] == weight.shape[2], "Incompatible dimensions"
     assert input.is_contiguous(), "Matrix input must be contiguous"
     assert weight.is_contiguous(), "Matrix weight must be contiguous"
     assert neighbor.is_contiguous(), "Matrix neighbor must be contiguous"
-    N, M, Ci, Co, V = input.shape[0], neighbor.shape[0], input.shape[1], weight.shape[0], weight.shape[1]
+    Co = weight.shape[2] if TRANSPOSE_WEIGHT else weight.shape[0]
+    N, M, Ci, V = input.shape[0], neighbor.shape[0], input.shape[1], weight.shape[1]
     LOGN = int(math.log2(N))
     LOGM = int(math.log2(M))
     # Launch the kernel.
