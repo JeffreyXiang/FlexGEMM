@@ -79,10 +79,36 @@ setup(
     ]
 )
 
-# copy cache to tmp dir
+# Install autotune cache. If an existing cache is present, merge entries
+# from the package's cache on top of it (package values override existing).
+import json
+
+def _deep_merge(base, override):
+    """Recursively merge ``override`` into ``base``; ``override`` wins on leaves."""
+    if isinstance(base, dict) and isinstance(override, dict):
+        merged = dict(base)
+        for k, v in override.items():
+            merged[k] = _deep_merge(base.get(k), v) if k in base else v
+        return merged
+    return override
+
 os.makedirs(os.path.expanduser("~/.flex_gemm"), exist_ok=True)
-shutil.copyfile(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "autotune_cache.json"),
-    os.path.expanduser('~/.flex_gemm/autotune_cache.json'),
-)
+src_cache_path = os.path.join(ROOT, "autotune_cache.json")
+dst_cache_path = os.path.expanduser("~/.flex_gemm/autotune_cache.json")
+
+with open(src_cache_path, "r") as f:
+    src_cache = json.load(f)
+
+if os.path.exists(dst_cache_path):
+    try:
+        with open(dst_cache_path, "r") as f:
+            dst_cache = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        dst_cache = {}
+    merged_cache = _deep_merge(dst_cache, src_cache)
+else:
+    merged_cache = src_cache
+
+with open(dst_cache_path, "w") as f:
+    json.dump(merged_cache, f, indent=4)
 
