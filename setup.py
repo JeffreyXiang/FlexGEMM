@@ -1,5 +1,5 @@
 from setuptools import setup
-from torch.utils.cpp_extension import CUDAExtension, BuildExtension, IS_HIP_EXTENSION
+from torch.utils.cpp_extension import CUDAExtension, BuildExtension, IS_HIP_EXTENSION, CppExtension
 import os
 import platform
 import torch
@@ -69,6 +69,14 @@ setup(
                 "flex_gemm/kernels/cuda/ext.cpp",
             ],
             extra_compile_args=extra_compile_args
+        ),
+        CppExtension(
+            name="flex_gemm.kernels.cpu",
+            sources=[
+                "flex_gemm/kernels/cpu/ext.cpp",
+                "flex_gemm/kernels/cpu/spconv/sparse_neighbour_map.cpp",
+            ],
+            extra_compile_args=extra_compile_args["cxx"]
         )
     ],
     cmdclass={

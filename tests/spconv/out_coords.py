@@ -30,9 +30,9 @@ def cuda_fn(
     )
 
 
-def test_out_coords():
+def test_out_coords(resolution_power=10, device="cuda"):
     # Matrix dimensions.
-    RES = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048]
+    RES = [2**x for x in range(resolution_power+1)]
     
     test_cases = []
     for res in RES:
@@ -42,7 +42,7 @@ def test_out_coords():
     
     results = {}
     for res, ksize, stride, padding, dilation in tqdm(test_cases):
-        feats, coords, shape = sphere_coords(res, 0)
+        feats, coords, shape = sphere_coords(res, 0, device=device)
         args = {
             'coords': coords,
             'shape': shape,
@@ -54,7 +54,13 @@ def test_out_coords():
         config_key = f"res={res},ksize={ksize},stride={stride},padding={padding},dilation={dilation}"
         
         # Benchmark
+
+        args["coords"] = args["coords"].to("cuda")
+        # Use the gpu to do this part as the cpu is way too inefficient
         avg_time_torch, memory_torch, C_torch = benchmark_kernel(torch_fn, **args)
+        args["coords"] = args["coords"].to(device)
+        C_torch = C_torch.to(device)
+
         flex_gemm.ops.spconv.OUT_COORD_ALGO = flex_gemm.ops.spconv.SparseConv3dOutCoordAlgorithm.HASHMAP
         avg_time_cuda_hasmap, memory_cuda_hasmap, C_cuda_hasmap = benchmark_kernel(cuda_fn, **args)
         flex_gemm.ops.spconv.OUT_COORD_ALGO = flex_gemm.ops.spconv.SparseConv3dOutCoordAlgorithm.EXPAND_UNIQUE
@@ -82,4 +88,5 @@ def test_out_coords():
 
 
 if __name__ == '__main__':
-    test_out_coords()
+    test_out_coords(resolution_power=8, device="cuda")
+    test_out_coords(resolution_power=8, device="cpu")
