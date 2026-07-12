@@ -2,6 +2,7 @@
 #pragma once
 #include "../utils.h"
 #include <cstddef>
+#include <cstdio>
 #include <limits>
 
 namespace flex_gemm {
@@ -45,6 +46,21 @@ linear_probing_insert(K *hashmap_keys, const K key, const size_t N,
         slot = (slot < N) ? slot : 0; // I write it this way so that the
                                       // compiler generates CMOV instruction
     }
+    return slot; // I choose to return the slot here so i dont have to rewrite
+                 // this code later
+}
+
+template <typename K>
+FORCE_INLINE size_t linear_probing_insert_cpu(K *hashmap_keys, const K key,
+                                              const size_t N) {
+    size_t slot = hash(key, N);
+
+    K expected = std::numeric_limits<K>::max();
+    while (hashmap_keys[slot] != expected && hashmap_keys[slot] != key) {
+        slot++;
+        slot = (slot < N) ? slot : 0;
+    }
+    hashmap_keys[slot] = key;
     return slot; // I choose to return the slot here so i dont have to rewrite
                  // this code later
 }
