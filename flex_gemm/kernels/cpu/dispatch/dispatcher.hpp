@@ -1,13 +1,19 @@
+#pragma once
+
 #include "utils.hpp"
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <utility>
 
 namespace flex_gemm {
 namespace dispatch {
 template <class Bucket> class BucketDispatcher {
+  public:
     using BucketType = flex_gemm::dispatch::PaddedLock<Bucket>;
+    using OptRefBucket = std::optional<std::reference_wrapper<Bucket>>;
 
   private:
     int num_of_buckets;
@@ -35,6 +41,28 @@ template <class Bucket> class BucketDispatcher {
         bucket_lock[thread_id] = bucket_id;
     }
     void free_thread_lock(int thread_id) { bucket_lock[thread_id] = -1; }
+    OptRefBucket try_lock(int thread_id, int num_of_tries) {
+        // This is blocking schedule
+        // This function does not check if you have locked something before so
+        // be sure to free it. If you try to lock 2 places at once, the function
+        // will forget the first locked bucket_id and it will not be able to
+        // unlock. linear lock schedule
+        // int track = 20;
+        int start = thread_id % num_of_buckets;
+        for (int i = 0; i < num_of_tries; i++) {
+            for (int j = 0; j < num_of_buckets; j++) {
+                LOCK_DATA result = buckets[start].try_lock();
+                if (result == UNLOCKED) {
+                    register_thread_lock(thread_id, start);
+                    return OptRefBucket{*buckets[start]};
+                }
+
+                start++;
+                start = (start >= num_of_buckets) ? 0 : start;
+            }
+        }
+        return OptRefBucket{};
+    }
     Bucket &lock(int thread_id) {
         // This is blocking schedule
         // This function does not check if you have locked something before so
@@ -44,8 +72,8 @@ template <class Bucket> class BucketDispatcher {
         // int track = 20;
         int start = thread_id % num_of_buckets;
         while (true) {
-            //fprintf(stdout, "Thread %d: LOCKER: Trying %d\n", thread_id, start);
-            //fflush(stdout);
+            // fprintf(stdout, "Thread %d: LOCKER: Trying %d\n", thread_id,
+            // start); fflush(stdout);
             LOCK_DATA result = buckets[start].try_lock();
             if (result == UNLOCKED) {
                 register_thread_lock(thread_id, start);
@@ -64,8 +92,8 @@ template <class Bucket> class BucketDispatcher {
         buckets[bucket_id].mark_broken();
         free_thread_lock(thread_id);
 
-        //fprintf(stdout, "Thread %d: BROKEN: Broken %d\n", thread_id, bucket_id);
-        //fflush(stdout);
+        // fprintf(stdout, "Thread %d: BROKEN: Broken %d\n", thread_id,
+        // bucket_id); fflush(stdout);
     }
     void unlock(int thread_id) {
         // Again, if you try to free something that was not locked, the result
@@ -74,8 +102,17 @@ template <class Bucket> class BucketDispatcher {
         buckets[bucket_id].unlock();
         free_thread_lock(thread_id);
 
-        //fprintf(stdout, "Thread %d: UNLOCKED: Unlocked %d\n", thread_id, bucket_id);
-        //fflush(stdout);
+        // fprintf(stdout, "Thread %d: UNLOCKED: Unlocked %d\n", thread_id,
+        // bucket_id); fflush(stdout);
+    }
+    void status(FILE *file, int thread_id) {
+        // assume the bucket has bucket_id, start, and end
+        for (int i = 0; i < num_of_buckets; i++) {
+            Bucket &state = *buckets[i];
+            size_t total = state.end - state.start;
+            fprintf(file, "Thread %d: Query: Bucket %ld : %ld\n", thread_id,
+                    state.bucket_id, total);
+        }
     }
     ~BucketDispatcher() {}
 };

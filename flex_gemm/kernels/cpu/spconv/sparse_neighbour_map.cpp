@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <iostream>
+#include <limits>
 #include <torch/extension.h>
 
 #include "../hash/hash.hpp"
@@ -11,9 +12,14 @@
 #include "utils.hpp"
 
 #include "../dispatch/dispatcher.hpp"
+#include "../masked_select.hpp"
 
 #define GRAIN_SIZE 256
 #define MIN_HASHMAP_SEGMENT_SIZE 32
+#define MIN_MASKING_SEGMENT_SIZE 2048
+#define MAX_MASKING_SEGMENT_SIZE 32768
+
+#define NEW_MASK true
 
 namespace flex_gemm {
 namespace spconv {
@@ -43,7 +49,7 @@ void build_sparse_conv_out_coords_hashmap_insert_kernel_cpu_dispatched(
     const int Sh, const int Sd, const int Pw, const int Ph, const int Pd,
     const int Dw, const int Dh, const int Dd,
     const int32_t *__restrict__ coords, T *__restrict__ hashmap_keys,
-    SerializeFunc serialize_func) {
+    utils::RangeBucket &range_bucket, SerializeFunc serialize_func) {
     int num_of_threads = at::get_num_threads();
     int num_of_buckets = num_of_threads;
     int min_to_equal = MIN_HASHMAP_SEGMENT_SIZE * num_of_buckets;
@@ -107,8 +113,13 @@ void build_sparse_conv_out_coords_hashmap_insert_kernel_cpu_dispatched(
                     if (out_x >= 0 && out_x < Wo && out_y >= 0 && out_y < Ho &&
                         out_z >= 0 && out_z < Do) {
                         T key = serialize_func.encode(b, out_x, out_y, out_z);
-                        flex_gemm::hash::linear_probing_insert_cpu(
-                            dis.hashmap_chunk, key, dis.hashmap_size);
+                        size_t slot =
+                            flex_gemm::hash::linear_probing_insert_cpu(
+                                dis.hashmap_chunk, key, dis.hashmap_size);
+                        if (slot != std::numeric_limits<size_t>::max()) {
+                            size_t offset = dis.hashmap_chunk - hashmap_keys;
+                            range_bucket.inc(slot + offset);
+                        }
                     }
                 }
             }
@@ -236,6 +247,19 @@ torch::Tensor hashmap_build_sparse_conv_out_coords(
             sizeof(T) == 4 ? torch::kUInt32 : torch::kUInt64;
         constexpr auto dtype = sizeof(T) == 4 ? torch::kInt32 : torch::kInt64;
 
+        int num_threads = at::get_num_threads();
+        int bucket_size =
+            num_threads * 2; // Again the 2 multiplier is just for fun.
+        int min_to_equal = MIN_MASKING_SEGMENT_SIZE * bucket_size;
+        bucket_size = (hashmap_size >= min_to_equal)
+                          ? bucket_size
+                          : hashmap_size / MIN_MASKING_SEGMENT_SIZE;
+        bucket_size = (bucket_size > 0) ? bucket_size : 1;
+        bucket_size = (hashmap_size / bucket_size <= MAX_MASKING_SEGMENT_SIZE)
+                          ? bucket_size
+                          : hashmap_size / MAX_MASKING_SEGMENT_SIZE;
+        utils::RangeBucket range_bucket(hashmap_size, bucket_size);
+
         torch::Tensor hashmap_keys = torch::full(
             {static_cast<int64_t>(hashmap_size)}, std::numeric_limits<T>::max(),
             torch::dtype(udtype).device(in_coords.device()));
@@ -243,14 +267,24 @@ torch::Tensor hashmap_build_sparse_conv_out_coords(
         build_sparse_conv_out_coords_hashmap_insert_kernel_cpu_dispatched(
             hashmap_keys.size(0), in_coords.size(0), Wo, Ho, Do, V, Kw, Kh, Kd,
             Sw, Sh, Sd, Pw, Ph, Pd, Dw, Dh, Dd, in_coords.data_ptr<int32_t>(),
-            hashmap_keys.data_ptr<T>(), serialize_func);
+            hashmap_keys.data_ptr<T>(), range_bucket, serialize_func);
 
+#if NEW_MASK == true
+        torch::Tensor valid_key = torch::empty(
+            {static_cast<int64_t>(range_bucket.total_count(bucket_size))},
+            torch::dtype(udtype).device(hashmap_keys.device()));
+
+        select::remove_select_cpu(
+            hashmap_keys.size(0), valid_key.size(0), bucket_size, range_bucket,
+            std::numeric_limits<T>::max(), hashmap_keys.data_ptr<T>(),
+            valid_key.data_ptr<T>());
+#else
         torch::Tensor valid_key = hashmap_keys.view(dtype).masked_select(
             hashmap_keys != std::numeric_limits<T>::max());
-        // valid_key = std::get<0>(valid_key.sort()).view(udtype);
+#endif
 
-        valid_key =
-            std::get<0>(at::_unique(valid_key, true, false)).view(udtype);
+        valid_key = std::get<0>(at::_unique(valid_key.view(dtype), true, false))
+                        .view(udtype);
 
         torch::Tensor out_coords = torch::empty(
             {valid_key.size(0), 4},

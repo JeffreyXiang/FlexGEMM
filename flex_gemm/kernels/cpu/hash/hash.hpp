@@ -60,9 +60,14 @@ FORCE_INLINE size_t linear_probing_insert_cpu(K *hashmap_keys, const K key,
         slot++;
         slot = (slot < N) ? slot : 0;
     }
-    hashmap_keys[slot] = key;
-    return slot; // I choose to return the slot here so i dont have to rewrite
-                 // this code later
+    if (hashmap_keys[slot] != key) {
+        hashmap_keys[slot] = key;
+        return slot; // I choose to return the slot here so i dont have to
+                     // rewrite
+                     // this code later
+    }else{
+        return std::numeric_limits<size_t>::max();
+    }
 }
 
 template <typename K, typename V>
