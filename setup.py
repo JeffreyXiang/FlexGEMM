@@ -1,5 +1,5 @@
 from setuptools import setup
-from torch.utils.cpp_extension import CUDAExtension, BuildExtension, IS_HIP_EXTENSION
+from torch.utils.cpp_extension import CUDAExtension, BuildExtension, IS_HIP_EXTENSION, CppExtension
 import os
 import platform
 import torch
@@ -34,7 +34,7 @@ else:
     # Match PyTorch's CXX11 ABI setting
     cxx11_abi = "1" if torch.compiled_with_cxx11_abi() else "0"
     extra_compile_args = {
-        "cxx": ["-O3", "-std=c++17", "-fopenmp", f"-D_GLIBCXX_USE_CXX11_ABI={cxx11_abi}"],
+        "cxx": ["-O3", "-std=c++17", "-fopenmp", f"-D_GLIBCXX_USE_CXX11_ABI={cxx11_abi}", "-g", "-fno-omit-frame-pointer"],
         "nvcc": ["-O3", "-std=c++17"] + cc_flag,
     }
 
@@ -69,6 +69,14 @@ setup(
                 "flex_gemm/kernels/cuda/ext.cpp",
             ],
             extra_compile_args=extra_compile_args
+        ),
+        CppExtension(
+            name="flex_gemm.kernels.cpu",
+            sources=[
+                "flex_gemm/kernels/cpu/ext.cpp",
+                "flex_gemm/kernels/cpu/spconv/sparse_neighbour_map.cpp",
+            ],
+            extra_compile_args=extra_compile_args["cxx"]
         )
     ],
     cmdclass={

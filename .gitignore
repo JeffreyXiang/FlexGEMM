@@ -394,6 +394,9 @@ FodyWeavers.xsd
 *.msm
 *.msp
 
+# Clang Formatter config
+.clang-format
+
 # JetBrains Rider
 *.sln.iml
 

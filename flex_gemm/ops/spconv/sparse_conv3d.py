@@ -90,7 +90,25 @@ class SparseConv3dFunction(Function):
                     dilation[0], dilation[1], dilation[2],
                 )
         else:
-            raise NotImplementedError("CPU version is not implemented")
+            # raise NotImplementedError("CPU version is not implemented")
+            if spconv.OUT_COORD_ALGO == SparseConv3dOutCoordAlgorithm.HASHMAP:
+                output_coords = kernels.cpu.hashmap_build_sparse_conv_out_coords(
+                    coords, spconv.OUT_COORD_HASHMAP_RATIO, spconv.SERIALIZATION_MODE,
+                    N, W, H, D,
+                    kernel_size[0], kernel_size[1], kernel_size[2],
+                    stride[0], stride[1], stride[2],
+                    padding[0], padding[1], padding[2],
+                    dilation[0], dilation[1], dilation[2],
+                )
+            elif spconv.OUT_COORD_ALGO == SparseConv3dOutCoordAlgorithm.EXPAND_UNIQUE:
+                output_coords = kernels.cpu.expand_unique_build_sparse_conv_out_coords(
+                    coords, spconv.SERIALIZATION_MODE,
+                    N, W, H, D,
+                    kernel_size[0], kernel_size[1], kernel_size[2],
+                    stride[0], stride[1], stride[2],
+                    padding[0], padding[1], padding[2],
+                    dilation[0], dilation[1], dilation[2],
+                )
         return output_coords
     
     @staticmethod
