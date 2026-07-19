@@ -3,7 +3,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <iostream>
 #include <limits>
 #include <torch/extension.h>
 
@@ -133,91 +132,12 @@ void build_sparse_conv_out_coords_hashmap_insert_kernel_cpu_dispatched(
     });
 }
 
-template <class T, class SerializeFunc>
-void build_sparse_conv_out_coords_hashmap_insert_kernel(
-    const size_t N, const size_t M, const int Wo, const int Ho, const int Do,
-    const int V, const int Kw, const int Kh, const int Kd, const int Sw,
-    const int Sh, const int Sd, const int Pw, const int Ph, const int Pd,
-    const int Dw, const int Dh, const int Dd,
-    const int32_t *__restrict__ coords, T *__restrict__ hashmap_keys,
-    SerializeFunc serialize_func) {
-
-    // There is a chance that the coords are not aligned to 16 bytes (if it is a
-    // view or something) so we have to take this precaution.
-    bool is_aligned = (reinterpret_cast<std::uintptr_t>(coords) % 16) == 0;
-
-    if (is_aligned) {
-        at::parallel_for(0, M * V, GRAIN_SIZE, [&](size_t start, size_t end) {
-            for (size_t t_id = start; t_id < end; t_id++) {
-                const size_t idx = t_id / V;
-                int4 coord = reinterpret_cast<const int4 *>(coords)[idx];
-                int b = coord.x;
-                int x = coord.y;
-                int y = coord.z;
-                int z = coord.w;
-                int v = t_id % V;
-                int kx = v / (Kh * Kd);
-                int ky = v / Kd % Kh;
-                int kz = v % Kd;
-                int out_x = (x + Pw - kx * Dw);
-                int out_y = (y + Ph - ky * Dh);
-                int out_z = (z + Pd - kz * Dd);
-                if (out_x % Sw == 0 && out_y % Sh == 0 && out_z % Sd == 0) {
-                    out_x /= Sw;
-                    out_y /= Sh;
-                    out_z /= Sd;
-                    if (out_x >= 0 && out_x < Wo && out_y >= 0 && out_y < Ho &&
-                        out_z >= 0 && out_z < Do) {
-                        T key = serialize_func.encode(b, out_x, out_y, out_z);
-                        flex_gemm::hash::linear_probing_insert(hashmap_keys,
-                                                               key, N);
-                    }
-                }
-            }
-        });
-    } else {
-        // Not aligned version
-        at::parallel_for(0, M * V, GRAIN_SIZE, [&](size_t start, size_t end) {
-            for (size_t t_id = start; t_id < end; t_id++) {
-                const size_t idx = t_id / V;
-                // int4 coord = reinterpret_cast<const int4 *>(coords)[idx];
-                const int32_t *root = coords + (idx * 4);
-                int b = *root;
-                int x = *(root + 1);
-                int y = *(root + 2);
-                int z = *(root + 3);
-                int v = t_id % V;
-                int kx = v / (Kh * Kd);
-                int ky = v / Kd % Kh;
-                int kz = v % Kd;
-                int out_x = (x + Pw - kx * Dw);
-                int out_y = (y + Ph - ky * Dh);
-                int out_z = (z + Pd - kz * Dd);
-                if (out_x % Sw == 0 && out_y % Sh == 0 && out_z % Sd == 0) {
-                    out_x /= Sw;
-                    out_y /= Sh;
-                    out_z /= Sd;
-                    if (out_x >= 0 && out_x < Wo && out_y >= 0 && out_y < Ho &&
-                        out_z >= 0 && out_z < Do) {
-                        T key = serialize_func.encode(b, out_x, out_y, out_z);
-                        flex_gemm::hash::linear_probing_insert(hashmap_keys,
-                                                               key, N);
-                    }
-                }
-            }
-        });
-    }
-}
-
 template <typename T, typename SerializeFunc>
 void build_sparse_conv_out_coords_decode_key_kernel(
     const size_t N, const int Wo, const int Ho, const int Do,
     const T *__restrict__ valid_keys, int32_t *__restrict__ out_coords,
     SerializeFunc serialize_func) {
 
-    // Have to cache line aware this code.
-    // REALLY HAVE TO MAKE THIS CACHE AWARE HERE
-    // THERE CAN BE MISALIGNMENT
     at::parallel_for(0, N, GRAIN_SIZE, [&](size_t start, size_t end) {
         for (size_t t_id = start; t_id < end; t_id++) {
             T key = valid_keys[t_id];
@@ -248,6 +168,9 @@ torch::Tensor hashmap_build_sparse_conv_out_coords(
         constexpr auto dtype = sizeof(T) == 4 ? torch::kInt32 : torch::kInt64;
 
         int num_threads = at::get_num_threads();
+
+        // I have to figure out the best bucket_size value depending on the
+        // array size
         int bucket_size =
             num_threads * 2; // Again the 2 multiplier is just for fun.
         int min_to_equal = MIN_MASKING_SEGMENT_SIZE * bucket_size;
@@ -269,6 +192,10 @@ torch::Tensor hashmap_build_sparse_conv_out_coords(
             Sw, Sh, Sd, Pw, Ph, Pd, Dw, Dh, Dd, in_coords.data_ptr<int32_t>(),
             hashmap_keys.data_ptr<T>(), range_bucket, serialize_func);
 
+        // This is basically a comparison between the torch's masked_select and
+        // my implementation. My implementation makes the full function 2-2.5x
+        // faster on large resolutions meaning my remove_select is even faster
+        // than that compared to the torch implementation.
 #if NEW_MASK == true
         torch::Tensor valid_key = torch::empty(
             {static_cast<int64_t>(range_bucket.total_count(bucket_size))},
@@ -447,7 +374,7 @@ void build_sparse_conv_out_coords_expand_kernel(
     struct State {
         int bucket_id;
         size_t start,
-            end;    // Here the startand end represent the ranges in the coords.
+            end;    // Here the start and end represent the ranges in the coords.
         size_t ptr; // This is the ptr to the expanded_keys array
     };
 

@@ -50,6 +50,9 @@ linear_probing_insert(K *hashmap_keys, const K key, const size_t N,
                  // this code later
 }
 
+// Here in the CPU version, we assume that the different threads handle the
+// locking of each hashmap segment themselves removing the need to have slower
+// atomic operations.
 template <typename K>
 FORCE_INLINE size_t linear_probing_insert_cpu(K *hashmap_keys, const K key,
                                               const size_t N) {
@@ -65,7 +68,7 @@ FORCE_INLINE size_t linear_probing_insert_cpu(K *hashmap_keys, const K key,
         return slot; // I choose to return the slot here so i dont have to
                      // rewrite
                      // this code later
-    }else{
+    } else {
         return std::numeric_limits<size_t>::max();
     }
 }

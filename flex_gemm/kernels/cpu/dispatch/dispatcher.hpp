@@ -10,6 +10,12 @@
 
 namespace flex_gemm {
 namespace dispatch {
+
+// This is a bucket dispatcher class. This lets each thread lock a bucket to
+// perform calculations without needing to do any more CPU synchronization.
+// It takes 1 template argument which is the Bucket class that each bucket will
+// store. In the constructor, it also takes in a function used to initialize
+// each bucket.
 template <class Bucket> class BucketDispatcher {
   public:
     using BucketType = flex_gemm::dispatch::PaddedLock<Bucket>;
@@ -36,18 +42,31 @@ template <class Bucket> class BucketDispatcher {
             bucket_lock[i] = -1;
         }
     }
+    BucketDispatcher(BucketDispatcher &other) = delete;
+    BucketDispatcher &operator=(BucketDispatcher &other) = delete;
+    BucketDispatcher(BucketDispatcher &&r_value)
+        : num_of_buckets(r_value.num_of_buckets),
+          num_of_threads(r_value.num_of_threads),
+          buckets(std::move(r_value.buckets)),
+          bucket_lock(std::move(r_value.bucket_lock)) {}
+    BucketDispatcher &operator=(BucketDispatcher &&r_value) {
+        num_of_buckets = r_value.num_of_buckets;
+        num_of_threads = r_value.num_of_threads;
+        buckets = std::move(r_value.buckets);
+        bucket_lock = std::move(r_value.bucket_lock);
+        return *this;
+    }
     void register_thread_lock(int thread_id, int bucket_id) {
         // Be careful. This function overwrites the previous lock.
         bucket_lock[thread_id] = bucket_id;
     }
     void free_thread_lock(int thread_id) { bucket_lock[thread_id] = -1; }
     OptRefBucket try_lock(int thread_id, int num_of_tries) {
-        // This is blocking schedule
+        // This is non blocking schedule
         // This function does not check if you have locked something before so
         // be sure to free it. If you try to lock 2 places at once, the function
         // will forget the first locked bucket_id and it will not be able to
-        // unlock. linear lock schedule
-        // int track = 20;
+        // unlock it. linear lock schedule
         int start = thread_id % num_of_buckets;
         for (int i = 0; i < num_of_tries; i++) {
             for (int j = 0; j < num_of_buckets; j++) {
@@ -68,8 +87,7 @@ template <class Bucket> class BucketDispatcher {
         // This function does not check if you have locked something before so
         // be sure to free it. If you try to lock 2 places at once, the function
         // will forget the first locked bucket_id and it will not be able to
-        // unlock. linear lock schedule
-        // int track = 20;
+        // unlock it. linear lock schedule
         int start = thread_id % num_of_buckets;
         while (true) {
             // fprintf(stdout, "Thread %d: LOCKER: Trying %d\n", thread_id,
@@ -91,9 +109,6 @@ template <class Bucket> class BucketDispatcher {
         int bucket_id = bucket_lock[thread_id];
         buckets[bucket_id].mark_broken();
         free_thread_lock(thread_id);
-
-        // fprintf(stdout, "Thread %d: BROKEN: Broken %d\n", thread_id,
-        // bucket_id); fflush(stdout);
     }
     void unlock(int thread_id) {
         // Again, if you try to free something that was not locked, the result
@@ -101,9 +116,6 @@ template <class Bucket> class BucketDispatcher {
         int bucket_id = bucket_lock[thread_id];
         buckets[bucket_id].unlock();
         free_thread_lock(thread_id);
-
-        // fprintf(stdout, "Thread %d: UNLOCKED: Unlocked %d\n", thread_id,
-        // bucket_id); fflush(stdout);
     }
     void status(FILE *file, int thread_id) {
         // assume the bucket has bucket_id, start, and end
