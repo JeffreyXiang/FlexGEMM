@@ -27,8 +27,8 @@ else:
 
 if platform.system() == "Windows":
     extra_compile_args = {
-        "cxx": ["/O2", "/std:c++17", "/EHsc", "/openmp", "/permissive-", "/Zc:__cplusplus"],
-        "nvcc": ["-O3", "-std=c++17", "-Xcompiler=/std:c++17", "-Xcompiler=/EHsc", "-Xcompiler=/permissive-", "-Xcompiler=/Zc:__cplusplus"] + cc_flag,
+        "cxx": ["/O2", "/std:c++20", "/EHsc", "/openmp", "/permissive-", "/Zc:__cplusplus"],
+        "nvcc": ["-O3", "-std=c++20", "-Xcompiler=/std:c++20", "-Xcompiler=/EHsc", "-Xcompiler=/permissive-", "-Xcompiler=/Zc:__cplusplus"] + cc_flag,
     }
 else:
     # Match PyTorch's CXX11 ABI setting
@@ -111,4 +111,3 @@ else:
 
 with open(dst_cache_path, "w") as f:
     json.dump(merged_cache, f, indent=4)
-
