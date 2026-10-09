@@ -1,6 +1,7 @@
 from typing import *
 import torch
 from torch.autograd import Function
+from . import explicit_gemm
 from . import Algorithm
 from .. import spconv, utils
 from ... import kernels
@@ -156,20 +157,9 @@ class SubMConv3dFunction(Function):
         V = Kd * Kh * Kw
         
         if spconv.ALGORITHM == Algorithm.EXPLICIT_GEMM:        
-            neighbor_map = neighbor_cache['neighbor_map']
-            
-            # im2col
-            im2col = torch.zeros((N * V, Ci), device=feats.device, dtype=feats.dtype)
-            mask = neighbor_map.view(-1) != 0xffffffff
-            im2col[mask] = feats[neighbor_map.view(-1).long()[mask]]
-            im2col = im2col.view(N, V * Ci)
-            
-            # addmm
-            weight = weight.view(Co, V * Ci).transpose(0, 1)
-            if bias is not None:
-                output = torch.addmm(bias, im2col, weight)
-            else:
-                output = torch.mm(im2col, weight)
+            output = explicit_gemm.explicit_gemm_forward(
+                feats, neighbor_cache['neighbor_map'], weight, bias
+            )
         
         elif spconv.ALGORITHM == Algorithm.IMPLICIT_GEMM:
             output = kernels.triton.sparse_submanifold_conv_fwd_implicit_gemm(
