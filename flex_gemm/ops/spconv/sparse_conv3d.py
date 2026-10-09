@@ -1,6 +1,7 @@
 from typing import *
 import torch
 from torch.autograd import Function
+from . import explicit_gemm
 from . import Algorithm, SparseConv3dOutCoordAlgorithm
 from .. import spconv
 from ... import kernels
@@ -286,20 +287,9 @@ class SparseConv3dFunction(Function):
         V = Kd * Kh * Kw
         
         if spconv.ALGORITHM == Algorithm.EXPLICIT_GEMM:        
-            neighbor_map = neighbor_cache['neighbor_map']
-            
-            # im2col
-            im2col = torch.zeros((neighbor_map.shape[0] * V, Ci), device=feats.device, dtype=feats.dtype)
-            mask = neighbor_map.view(-1) != 0xffffffff
-            im2col[mask] = feats[neighbor_map.view(-1).long()[mask]]
-            im2col = im2col.view(neighbor_map.shape[0], V * Ci)
-            
-            # addmm
-            weight = weight.view(Co, V * Ci).transpose(0, 1)
-            if bias is not None:
-                output = torch.addmm(bias, im2col, weight)
-            else:
-                output = torch.mm(im2col, weight)
+            output = explicit_gemm.explicit_gemm_forward(
+                feats, neighbor_cache['neighbor_map'], weight, bias
+            )
         
         elif spconv.ALGORITHM == Algorithm.IMPLICIT_GEMM:
             output = kernels.triton.sparse_conv_fwd_implicit_gemm(
